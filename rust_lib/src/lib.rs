@@ -82,8 +82,8 @@ fn get_dir_size(path: &Path) -> Result<u64, DirSizeError> {
 }
 
 #[pymodule]
-fn rust_lib(_py: Python, m: &mut PyModule) -> PyResult<()> {
-    // 何も追加しない！
+fn rust_lib(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(get_dir_size_py, m)?)?;
     Ok(())
 }
 
@@ -127,6 +127,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn test_get_dir_size_permission_denied() {
         // 管理者権限が必要なディレクトリ (通常はアクセスできない)

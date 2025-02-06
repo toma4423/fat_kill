@@ -5,10 +5,10 @@ edition = "2021"
 
 [lib]
 name = "rust_lib"
-crate-type = ["cdylib"]  # Python拡張モジュールとしてビルドするために必要
+crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.23.4", features = ["extension-module"] }
+pyo3 = { version = "0.18.0", features = ["extension-module"] } # バージョンを 0.18.0 に固定
 
 [dev-dependencies]
 tempfile = "3"
