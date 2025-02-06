@@ -8,7 +8,7 @@ name = "rust_lib"
 crate-type = ["cdylib"]  # Python拡張モジュールとしてビルドするために必要
 
 [dependencies]
-pyo3 = { version = "0.21", features = ["extension-module"] }
+pyo3 = { version = "0.23.4", features = ["extension-module"] }
 
 [dev-dependencies]
 tempfile = "3"

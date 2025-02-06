@@ -1,3 +1,4 @@
+use pyo3::types::PyModule;
 use pyo3::prelude::*;
 use pyo3::exceptions::PyIOError;
 use std::fs::{self, DirEntry};
@@ -86,7 +87,6 @@ fn rust_lib(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_dir_size_py, m)?)?;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
