@@ -1,0 +1,18 @@
+# Rust
+/target/
+Cargo.lock
+*.rs.bk
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+*.exe #exeファイル
+*.spec #pyinstallerのspecファイル
+
+# OS generated files
+.DS_Store
+Thumbs.db
