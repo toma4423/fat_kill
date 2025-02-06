@@ -1,4 +1,3 @@
-use pyo3::types::PyModule;
 use pyo3::prelude::*;
 use pyo3::exceptions::PyIOError;
 use std::fs::{self, DirEntry};
@@ -83,8 +82,8 @@ fn get_dir_size(path: &Path) -> Result<u64, DirSizeError> {
 }
 
 #[pymodule]
-fn rust_lib(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(get_dir_size_py, m)?)?;
+fn rust_lib(_py: Python, m: &mut PyModule) -> PyResult<()> {
+    // 何も追加しない！
     Ok(())
 }
 
