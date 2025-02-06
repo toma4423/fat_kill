@@ -1,3 +1,5 @@
+use pyo3::prelude::*;
+use pyo3::exceptions::PyIOError;
 use std::fs::{self, DirEntry};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -35,21 +37,32 @@ impl From<(io::Error, &Path)> for DirSizeError {
     }
 }
 
+impl From<DirSizeError> for PyErr {
+    fn from(error: DirSizeError) -> Self {
+        PyIOError::new_err(format!("{}", error))
+    }
+}
+
 #[pyfunction]
+fn get_dir_size_py(path: String) -> PyResult<u64> {
+    let path_buf = PathBuf::from(path);
+    get_dir_size(&path_buf).map_err(|e| e.into())
+}
+
 fn get_dir_size(path: &Path) -> Result<u64, DirSizeError> {
     let mut total_size = 0;
-    println!("Entering get_dir_size: {:?}", path); // 関数開始時にパスを出力
+    println!("Entering get_dir_size: {:?}", path);
 
     for entry_result in fs::read_dir(path).map_err(|e| DirSizeError::from((e, path)))? {
-        let entry: DirEntry = match entry_result { // 型を明示
+        let entry: DirEntry = match entry_result {
             Ok(entry) => entry,
             Err(e) => {
-                println!("Error reading entry: {:?}", e); // エラーを出力
+                println!("Error reading entry: {:?}", e);
                 return Err(DirSizeError::from((e, path)));
             }
         };
 
-        println!("Processing entry: {:?}", entry.path()); // 処理中のエントリを出力
+        println!("Processing entry: {:?}", entry.path());
 
         let metadata = entry
             .metadata()
@@ -59,14 +72,21 @@ fn get_dir_size(path: &Path) -> Result<u64, DirSizeError> {
             println!("  It's a directory");
             total_size += get_dir_size(&entry.path())?;
         } else {
-            println!("  It's a file, size: {}", metadata.len()); // ファイルサイズを出力
+            println!("  It's a file, size: {}", metadata.len());
             total_size += metadata.len();
         }
     }
 
-    println!("Leaving get_dir_size, total_size: {}", total_size); // 関数終了時にサイズを出力
+    println!("Leaving get_dir_size, total_size: {}", total_size);
     Ok(total_size)
 }
+
+#[pymodule]
+fn rust_lib(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(get_dir_size_py, m)?)?;
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -87,10 +107,7 @@ mod tests {
         let mut file = File::create(&file_path).unwrap();
         writeln!(file, "Hello, world!").unwrap();
 
-        drop(file); // 明示的にファイルを閉じる
-
-        // let metadata = file.metadata().unwrap();  // 不要になる
-        // println!("File size: {}", metadata.len());
+        drop(file);
 
         let size = get_dir_size(dir_path).unwrap();
 
