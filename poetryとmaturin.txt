@@ -1,0 +1,119 @@
+# Python-Rust 連携環境のセットアップ記録
+
+## 背景と必要性
+- GUIアプリケーションでの高速なファイルシステム操作が必要
+- Pythonの使いやすさとRustのパフォーマンスを組み合わせたい
+- クロスプラットフォームでの動作を考慮
+
+## 最終目標
+1. ディレクトリサイズ計算をRustで実装
+2. PyQt6によるGUIをPythonで実装
+3. Poetry による依存関係の一元管理
+4. VSCodeでの統合開発環境の構築
+
+## アーキテクチャ
+- フロントエンド: Python (PyQt6)
+- バックエンド: Rust (maturin)
+- 依存関係管理: Poetry
+- 開発環境: VSCode
+
+## 試行錯誤の記録
+
+### 失敗したアプローチ
+1. 単純な `poetry shell` の使用
+   - エラー: "The command 'shell' does not exist."
+   - 原因: Poetry の仮想環境アクティベーションの問題
+   - 教訓: Windows環境では `poetry shell` が動作しない場合がある
+   - 解決策: `poetry run` コマンドを使用
+
+2. Maturin の直接実行
+   - エラー: "Couldn't find a virtualenv or conda environment"
+   - 原因: Poetry の仮想環境とのパス解決の問題
+   - 教訓: Maturin は仮想環境を明示的に認識する必要がある
+   - 解決策: Poetry経由でMaturinを実行
+
+3. 相対パスでの Cargo.toml 指定
+   - エラー: "指定されたファイルが見つかりません。(os error 2)"
+   - 試行1: `maturin develop --release ../rust_lib`
+   - 試行2: `maturin build --release -m Cargo.toml`
+   - 試行3: `maturin build --release --manifest-path "./Cargo.toml"`
+   - 教訓: Windows環境ではパスの指定方法が重要
+   - 解決策: 絶対パスを使用
+
+### 成功したアプローチの詳細手順
+1. Poetry のインストールと初期設定
+   ```bash
+   # Poetryのクリーンインストール
+   pip uninstall poetry
+   python -m pip install poetry
+
+   # プロジェクトディレクトリでの設定
+   cd py_app
+   poetry install
+   poetry config virtualenvs.in-project true
+   poetry env use python
+   poetry install
+   ```
+
+2. 依存関係の確認
+   ```bash
+   # PyQt6のインストール確認
+   poetry run python -c "import PyQt6; print('PyQt6 installed successfully')"
+   ```
+
+3. Rust ライブラリのビルドとインストール
+   ```bash
+   # Rustライブラリのビルド（絶対パスを使用）
+   cd ../rust_lib
+   poetry -C ../py_app run maturin build --release --manifest-path "%CD%\Cargo.toml"
+
+   # ビルドしたライブラリのインストール
+   cd ../py_app
+   poetry run pip install ../rust_lib/target/wheels/*.whl
+   ```
+
+## 環境情報
+- OS: Windows 11 Pro 24H2
+- Python: 3.13.0
+- Poetry: 2.0.1
+- PyQt6: 6.8.1
+- Maturin: 1.8.2
+
+## VSCode設定
+### launch.json の設定
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "cwd": "${workspaceFolder}/py_app",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}
+```
+
+## トラブルシューティングガイド
+1. poetry shell が動作しない場合
+   - 対策: poetry run を使用する
+
+2. Maturin がCargo.tomlを見つけられない場合
+   - 対策: 絶対パスで指定する（%CD%を使用）
+
+3. 仮想環境が認識されない場合
+   - 対策: poetry -C オプションで設定ファイルの場所を指定
+
+## 動作確認済みの機能
+1. Poetry仮想環境でのPyQt6の実行
+2. Rustライブラリ（rust_lib）のインポートと実行
+3. VSCodeでのデバッグ実行
+
+このファイルには、環境構築の過程で遭遇した問題と、それらを解決するために採用した方法が記録されています。将来同様の設定を行う際の参考になるでしょう。

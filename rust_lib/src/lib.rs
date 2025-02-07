@@ -49,41 +49,52 @@ fn get_dir_size_py(path: String) -> PyResult<u64> {
     get_dir_size(&path_buf).map_err(|e| e.into())
 }
 
+#[pyfunction]
+fn get_access_denied_value() -> u64 {
+    u64::MAX
+}
+
 fn get_dir_size(path: &Path) -> Result<u64, DirSizeError> {
     let mut total_size = 0;
-    println!("Entering get_dir_size: {:?}", path);
+    let mut access_denied = false;
+    println!("Scanning directory: {:?}", path);
 
-    for entry_result in fs::read_dir(path).map_err(|e| DirSizeError::from((e, path)))? {
-        let entry: DirEntry = match entry_result {
-            Ok(entry) => entry,
-            Err(e) => {
-                println!("Error reading entry: {:?}", e);
-                return Err(DirSizeError::from((e, path)));
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {  // エラーのあるエントリはスキップ
+            let path = entry.path();
+            println!("  Processing: {:?}", path);
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() {
+                    println!("    File size: {}", metadata.len());
+                    total_size += metadata.len();
+                } else if metadata.is_dir() {
+                    println!("    Entering directory");
+                    match get_dir_size(&path) {
+                        Ok(size) => total_size += size,
+                        Err(_) => {
+                            println!("    Access denied");
+                            access_denied = true;
+                            continue;
+                        }
+                    }
+                }
             }
-        };
-
-        println!("Processing entry: {:?}", entry.path());
-
-        let metadata = entry
-            .metadata()
-            .map_err(|e| DirSizeError::from((e, entry.path().as_path())))?;
-
-        if metadata.is_dir() {
-            println!("  It's a directory");
-            total_size += get_dir_size(&entry.path())?;
-        } else {
-            println!("  It's a file, size: {}", metadata.len());
-            total_size += metadata.len();
         }
     }
 
-    println!("Leaving get_dir_size, total_size: {}", total_size);
-    Ok(total_size)
+    println!("Directory {:?} total size: {}", path, total_size);
+    if access_denied {
+        println!("  Some subdirectories were inaccessible");
+        Ok(u64::MAX)  // 特別な値でアクセス拒否を示す
+    } else {
+        Ok(total_size)
+    }
 }
 
 #[pymodule]
 fn rust_lib(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_dir_size_py, m)?)?;
+    m.add_function(wrap_pyfunction!(get_access_denied_value, m)?)?;
     Ok(())
 }
 

@@ -7,9 +7,12 @@ readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = "^3.13"
+python = ">=3.11,<3.12"
 pyqt6 = "^6.8.1"
 maturin = "^1.8.2"
+
+[tool.poetry.group.dev.dependencies]
+pyinstaller = "^6.11.1"
 
 [build-system]
 requires = ["poetry-core"]

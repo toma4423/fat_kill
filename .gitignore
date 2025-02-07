@@ -10,8 +10,11 @@ __pycache__/
 *.pyd
 .env
 venv/
-*.exe #exeファイル
-*.spec #pyinstallerのspecファイル
+
+# PyInstaller
+build/
+dist/
+*.spec
 
 # OS generated files
 .DS_Store

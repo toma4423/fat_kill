@@ -56,7 +56,16 @@
         - 新しいアプローチ:
           - os.walkの代わりにos.scandirを使用
           - 直接の子ディレクトリのみを処理
-          - ファイルは表示対象から除外
+        - 表示仕様の決定:
+          - ファイルも含めた完全なツリー表示を採用
+          - 理由:
+            1. 全体のサイズ構成が把握しやすい
+            2. 詳細な情報が必要な場合に便利
+            3. 展開/折りたたみで表示制御可能
+          - 利点:
+            - 直感的なディレクトリ構造の把握
+            - 正確なサイズ情報の表示
+            - 必要に応じた情報の取捨選択
         - 期待される効果:
           - より明確な階層構造
           - パフォーマンスの向上
@@ -192,6 +201,132 @@
       1. メモリ使用量の監視機能
       2. 大規模ディレクトリのページング
       3. メモリリークの検出と修正
+
+### EXE化対応
+#### 試行錯誤
+1. PyInstallerとの互換性問題
+   - 問題:
+     - Python 3.13がPyInstallerの対応バージョン外
+     - PyInstallerは3.8以上3.14未満をサポート
+   - 解決策:
+     1. pyproject.tomlのPythonバージョン指定を修正
+     2. 安定版Python（3.11など）での環境構築
+   - 検討結果:
+     - Python 3.11環境での構築を選択
+     - 理由:
+       1. 安定性が重要なEXE化フェーズでは実績のある環境が望ましい
+       2. PyInstallerとの完全な互換性が保証される
+       3. 将来的な保守性が高い
+       4. 多くのライブラリが安定してサポート
+   - 実施手順:
+     1. Python 3.11のインストール
+       - Python 3.11.9を公式サイトからダウンロード
+       - インストーラーオプション:
+         - "Add Python 3.11 to PATH" を有効化
+         - "Install for all users" を選択
+       - インストール後の確認:
+         - `python --version` で3.11.xを確認
+         - 確認結果:
+           - `py -3.11 --version` で Python 3.11.9 を確認
+     2. Poetry環境の再構築
+        - pyproject.tomlのPythonバージョンを3.11に変更
+        - 注意: コマンドは必ずpy_appディレクトリで実行
+        - トラブルシューティング:
+          ```bash
+          # VSCode環境の確認と再設定が成功
+          # - Python 3.11.9が正しく認識された
+          # - 注意: 必ずpy_appディレクトリで実行すること
+          cd py_app
+          # - Python 3.11環境の明示的な指定
+          poetry env use C:\Users\ikai0700275\AppData\Local\Programs\Python\Python311\python.exe
+          # - 環境の確認
+          poetry env info  # Python 3.11.9が正しく設定されたことを確認
+          # - 依存関係のインストールを実行
+          poetry install
+          # - Rustライブラリの再ビルド
+          cd ../rust_lib
+          poetry -C ../py_app run maturin build --release --manifest-path "%CD%\Cargo.toml"
+          cd ../py_app
+          poetry run pip install ../rust_lib/target/wheels/rust_lib-0.1.0-cp311-cp311-win_amd64.whl
+          # - インストール確認
+          poetry run python -c "import rust_lib; print('rust_lib installed successfully')"
+          # インポートエラーが発生したため、以下の手順で再インストール
+          # 1. Poetry依存関係の再インストール
+          poetry install
+          # 2. PyQt6の動作確認
+          poetry run python -c "import PyQt6; print('PyQt6 installed successfully')"
+          # 3. Rustライブラリの再ビルドとインストール
+          cd ../rust_lib
+          poetry -C ../py_app run maturin build --release --manifest-path "%CD%\Cargo.toml"
+          cd ../py_app
+          poetry run pip install ../rust_lib/target/wheels/rust_lib-0.1.0-cp311-cp311-win_amd64.whl
+          ```
+        - `poetry install` で依存関係を再インストール
+        - 動作確認: Rustライブラリが正常にインストールされたことを確認
+        - Rustライブラリのインポート確認
+          ```bash
+          poetry run python -c "import rust_lib; print('rust_lib installed successfully')"
+          ```
+        - アプリケーションの動作確認
+          ```bash
+          poetry run python gui_integration_test.py
+          ```
+        - インポートエラーが発生したため、以下の手順で再インストール
+        - 1. Poetry依存関係の再インストール
+        - 2. PyQt6の動作確認
+        - 3. Rustライブラリの再ビルドとインストール
+     3. 依存関係の再インストール
+     4. 動作テスト
+     5. EXE化作業
+       - 本番用ファイルの準備
+         ```bash
+         # gui_integration_test.pyの内容をDirectory_Size_Viewer.pyにコピー
+         copy gui_integration_test.py Directory_Size_Viewer.py
+         ```
+       - 動作確認
+         ```bash
+         # 本番用ファイルの動作確認
+         poetry run python Directory_Size_Viewer.py
+         
+         # 確認項目:
+         # 1. 通常のディレクトリ走査
+         # 2. アクセス権限エラーの表示
+         # 3. キャンセル機能
+         # 4. ツリービューの展開
+         
+         # アクセス権限エラーの改善
+         # Rust側での改善:
+         # - アクセス拒否時はそのディレクトリをスキップ
+         # - 特別な値(u64::MAX)でアクセス拒否を通知
+         # - 注意: 再インストール時は--force-reinstallオプションが必要
+         #   poetry run pip install --force-reinstall ../rust_lib/target/wheels/*.whl
+         # Python側での改善:
+         # - アクセス拒否があったディレクトリを視覚的に表示
+         # - ツールチップで詳細情報を表示
+         ```
+       - PyInstallerのインストール
+
+2. アクセス権限エラー処理の改善
+   - 問題:
+     - アクセス拒否されたディレクトリでアプリケーションが停止
+     - エラー表示が不適切
+   - 解決策:
+     1. Rust側の改善
+       - アクセス拒否時はディレクトリをスキップ
+       - 特別な値(u64::MAX)でアクセス拒否を通知
+       - エラーのあるエントリは`flatten()`でスキップ
+     2. Python側の改善
+       - アクセス拒否ディレクトリの視覚的表示
+       - ツールチップによる詳細情報表示
+       - 空ディレクトリとアクセス拒否の区別
+   - 動作確認:
+     - テストディレクトリ構造の作成
+     - アクセス権限制御によるテスト
+     - 正常なディレクトリとアクセス拒否ディレクトリの混在確認
+   - 次のステップ:
+     1. サイズ表示のソート機能実装
+     2. キャッシュ機能の追加
+     3. EXE化作業の継続
 
 ## 重要な発見や教訓
 1. アーキテクチャに関する発見

@@ -1,0 +1,36 @@
+# 既存のPoetryをアンインストール（もしあれば）
+pip uninstall poetry
+
+# または、この方法も試せます：
+python -m pip install poetry
+
+# py_appディレクトリで（現在いる場所）
+# 1. 依存関係のインストール
+poetry install
+
+# 2. Poetry環境の作成と設定
+poetry config virtualenvs.in-project true
+poetry env use python
+poetry install
+
+# 3. PyQt6のインストール確認
+poetry run python -c "import PyQt6; print('PyQt6 installed successfully')"
+
+# 4. Rustライブラリのビルド
+cd ../rust_lib
+poetry -C ../py_app run maturin build --release --manifest-path "%CD%\Cargo.toml"
+cd ../py_app
+poetry run pip install ../rust_lib/target/wheels/*.whl
+
+# 5. Rustライブラリのインストール確認
+poetry run pip install ../rust_lib/target/wheels/rust_lib-0.1.0-cp313-cp313-win_amd64.whl
+poetry run python -c "import rust_lib; print('rust_lib installed successfully')"
+
+# ファイル名の変更（Gitを使用しない場合）
+cd py_app
+ren testfile.py gui_feature_test.py
+ren test_file.py gui_integration_test.py
+
+# Pythonのパスを直接指定
+
+poetry env use C:\Users\ikai0700275\AppData\Local\Programs\Python\Python311\python.exe
