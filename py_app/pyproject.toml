@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "directory-size-viewer"
+version = "0.1.0"
+description = "Directory Size Viewer with Rust backend"
+authors = ["toma <bs.kougyou@gmail.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.13"
+pyqt6 = "^6.8.1"
+maturin = "^1.8.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFileSystemModel, QStandardItemModel, QStandardItem
 from PyQt6.QtCore import QSize, QDir, Qt, QThread, pyqtSignal
-import rust_lib  # Rust ライブラリをインポート
+import rust_lib
 
 print("Rust lib imported successfully")  # デバッグ出力
 
@@ -180,11 +180,16 @@ class DirectorySizeViewer(QWidget):
 
 
 if __name__ == "__main__":
-    print("__main__ block started")  # デバッグ出力
+    print("__main__ block started")
     app = QApplication(sys.argv)
+
     viewer = DirectorySizeViewer()
     viewer.show()
+    QApplication.processEvents()
+    print(QApplication.allWindows())
     try:
-        sys.exit(app.exec())
+        exit_code = app.exec()  # 戻り値を変数に格納
+        print(f"Exiting with code: {exit_code}")  # 戻り値を出力
+        sys.exit(exit_code)
     except Exception as e:
         print(f"An error occurred: {e}")

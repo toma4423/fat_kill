@@ -1,0 +1,11 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "activate-venv",
+            "type": "shell",
+            "command": "${workspaceFolder}/py_app/.venv/Scripts/activate.bat",
+            "problemMatcher": []
+        }
+    ]
+} 
