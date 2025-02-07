@@ -54,26 +54,23 @@ class DirSizeWorker(QRunnable):
     def run(self):
         try:
             total_files = 0
-            # 指定された深さまでのディレクトリを取得
-            base_depth = self.path.count(os.sep)
             print(f"Processing directory: {self.path} at depth {self.depth}")
             # 直接の子ディレクトリのみを処理
             try:
                 with os.scandir(self.path) as it:
-                    entries = list(it)
-                    total_files = len([e for e in entries if e.is_file()])
                     # まずルートディレクトリのサイズを計算
                     root_size = rust_lib.get_dir_size_py(self.path)
                     self.signals.result.emit(self.path, root_size)
 
                     # 子ディレクトリのみを処理
-                    for entry in entries:
+                    for entry in it:
                         if self.is_cancelled:
                             return
                         if entry.is_dir():
                             dir_path = entry.path
                             dir_size = rust_lib.get_dir_size_py(dir_path)
                             self.signals.result.emit(dir_path, dir_size)
+                            total_files += 1  # ディレクトリ数をカウント
             except PermissionError:
                 print(f"Permission denied: {self.path}")
                 return
@@ -207,11 +204,6 @@ class DirectorySizeViewer(QWidget):
     def handle_result(self, path, size):
         print("DirectorySizeViewer.handle_result() called")
         print(f"Processing path: {path} with size: {size}")
-
-        # ファイルの場合は表示しない
-        if not os.path.isdir(path):
-            print(f"Skipping file: {path}")
-            return
 
         # モデルが未初期化の場合は初期化
         if self.model is None:
@@ -405,13 +397,17 @@ class DirectorySizeViewer(QWidget):
         print(f"Expanding directory: {path}")
         if path and os.path.isdir(path):
             self.progress_bar.show()
+            # 新しいワーカーを作成する前に現在のワーカーを保存
+            if hasattr(self, "current_worker"):
+                old_worker = self.current_worker
+                old_worker.cancel()
             worker = DirSizeWorker(path, depth=1)
             worker.signals.result.connect(self.handle_result)
             worker.signals.error.connect(self.handle_error)
             worker.signals.finished.connect(self.scan_complete)
             worker.signals.progress.connect(self.update_progress)
             worker.signals.current_file.connect(self.update_current_file)
-            self.current_worker = worker  # 現在のワーカーを保持
+            self.current_worker = worker
             self.threadpool.start(worker)
         else:
             print(f"Path not valid or not a directory: {path}")
