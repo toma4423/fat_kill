@@ -379,3 +379,72 @@
   - 並列処理の導入
   - キャッシュシステムの実装
   - ユーザビリティの向上 
+
+# テストディレクトリ構造
+## 目的
+- Windowsでの様々なアクセス権限パターンのテスト
+- エラーハンドリングの検証
+- パス名処理の確認
+
+## ディレクトリ構造
+```
+test_dir/
+├── normal_dir/              # 通常のディレクトリ
+│   ├── test.txt
+│   └── subdir/
+│       └── subtest.txt
+├── readonly_dir/           # 読み取り専用
+│   └── readonly.txt
+├── denied_dir/            # アクセス拒否
+├── hidden_dir/            # 隠しディレクトリ
+├── very_long_directory.../ # 長いパス名
+└── special_chars_#@$/     # 特殊文字
+```
+
+## 作成コマンド
+```batch
+rem テストディレクトリのクリーンアップと作成
+rmdir /s /q test_dir
+mkdir test_dir
+
+rem 1. 通常のディレクトリ構造
+mkdir test_dir\normal_dir
+echo test file > test_dir\normal_dir\test.txt
+mkdir test_dir\normal_dir\subdir
+echo sub test > test_dir\normal_dir\subdir\subtest.txt
+
+rem 2. 読み取り専用ディレクトリ
+mkdir test_dir\readonly_dir
+echo readonly > test_dir\readonly_dir\readonly.txt
+attrib +r test_dir\readonly_dir\*.* /s /d
+
+rem 3. アクセス拒否ディレクトリ
+mkdir test_dir\denied_dir
+icacls test_dir\denied_dir /deny Everyone:(OI)(CI)F
+
+rem 4. 隠しディレクトリ
+mkdir test_dir\hidden_dir
+attrib +h test_dir\hidden_dir
+
+rem 5. 長いパス名のディレクトリ
+mkdir "test_dir\very_long_directory_name_that_might_cause_problems_with_some_systems_or_applications"
+
+rem 6. 特殊文字を含むディレクトリ
+mkdir "test_dir\special_chars_#@$"
+```
+
+## クリーンアップコマンド
+```batch
+rem 権限のリセット
+icacls test_dir\denied_dir /reset
+attrib -r test_dir\readonly_dir\*.* /s /d
+attrib -h test_dir\hidden_dir
+```
+
+## テストケース
+1. 通常アクセス: 正常に読み取りと再帰的走査が可能
+2. 読み取り専用: ファイル内容の変更は不可だが、サイズ取得は可能
+3. アクセス拒否: ディレクトリの走査自体が不可能
+4. 隠しディレクトリ: 通常の走査で検出可能か確認
+5. 長いパス名: パス長制限による問題の有無
+6. 特殊文字: パス名のエスケープ処理の確認 
