@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "C:/Users/ikai0700275/AppData/Local/Programs/Python/Python312/Lib/site-packages",
+        "./py_app/run_with_"
+    ]
+}

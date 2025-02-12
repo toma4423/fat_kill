@@ -1,19 +1,31 @@
-[tool.poetry]
-name = "directory-size-viewer"
+[project]
+name = "fat-kill"
 version = "0.1.0"
-description = "Directory Size Viewer with Rust backend"
-authors = ["toma <bs.kougyou@gmail.com>"]
+description = "Directory size viewer with Rust backend"
+authors = [
+    {name = "toma", email = "bs.kougyou@gmail.com"}
+]
+license = {text = "MIT"}
 readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "pytest (>=8.3.4,<9.0.0)",
+    "colorama (>=0.4.6,<0.5.0)",
+    "maturin (>=1.8.2,<2.0.0)",
+    "pyqt6 (>=6.8.1,<7.0.0)"
+]
+
+[tool.poetry]
+packages = [
+    { include = "fat_kill" }
+]
 package-mode = false
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.12"
-pyqt6 = "^6.8.1"
-maturin = "^1.8.2"
 
 [tool.poetry.group.dev.dependencies]
-pyinstaller = "^6.11.1"
+pyinstaller = "^6.12.0"
+pytest-qt = "^4.4.0"
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"

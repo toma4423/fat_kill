@@ -1,21 +1,40 @@
-# Rust
-/target/
-Cargo.lock
-*.rs.bk
-
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.env
-venv/
-
-# PyInstaller
+*.py[cod]
+*$py.class
+.Python
 build/
+develop-eggs/
 dist/
-*.spec
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# OS generated files
+# Poetry
+.venv/
+poetry.lock
+
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
 Thumbs.db
