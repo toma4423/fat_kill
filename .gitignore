@@ -18,6 +18,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
+*.spec
 
 # Poetry
 .venv/
@@ -38,3 +40,7 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# プロジェクト固有の内部情報はアップロード対象外とする
+プロジェクト実装順序.txt
+プロジェクト要件ファイル.md
