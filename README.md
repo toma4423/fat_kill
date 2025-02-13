@@ -39,7 +39,8 @@
 
 ## 仮想環境と Poetry の利用
 
-本プロジェクトは **Poetry** を使用して依存関係の管理および仮想環境の構築を行っています。  
+本プロジェクトは **Poetry** を使用して依存関係の管理および仮想環境の構築を行っています。
+
 - 依存ライブラリは `pyproject.toml` に記載されています。  
 - 開発時には `poetry install` により必要なパッケージが自動的にインストールされ、仮想環境内での実行が推奨されます。
 
@@ -48,11 +49,13 @@
 ### 開発環境での実行
 
 1. 仮想環境の構築・依存パッケージのインストール:
+
    ```bash
    poetry install
    ```
 
 2. アプリケーションの起動:
+
    ```bash
    poetry run python py_app/main.py
    ```
@@ -60,9 +63,11 @@
 ### EXE化
 
 **PyInstaller** を用いて単一実行ファイル（onefile）としてバンドルすることができます:
+
 ```bash
 poetry run pyinstaller --onefile --windowed py_app/main.py
 ```
+
 生成された実行ファイルは `dist` ディレクトリに生成されます。
 
 ## 今後の開発予定
