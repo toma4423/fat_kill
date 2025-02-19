@@ -3,7 +3,7 @@ name = "fat-kill"
 version = "0.1.0"
 description = "Directory size viewer with Rust backend"
 authors = [
-    {name = "toma", email = "bs.kougyou@gmail.com"}
+    {name = "toma"}
 ]
 license = {text = "MIT"}
 readme = "README.md"
