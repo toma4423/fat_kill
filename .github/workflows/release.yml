@@ -19,7 +19,16 @@ jobs:
         
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
-    
+      with:
+        toolchain: stable
+        target: x86_64-pc-windows-msvc
+        components: rustfmt, clippy
+
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        path: rust_lib
+
     - name: Install Poetry
       run: |
         python -m pip install --upgrade pip
@@ -34,9 +43,9 @@ jobs:
     - name: Build Rust library
       run: |
         cd rust_lib
-        poetry -C ../py_app run maturin build --release
+        poetry -C ../py_app run maturin build --release --manifest-path Cargo.toml
         cd ../py_app
-        poetry run pip install ../rust_lib/target/wheels/*.whl
+        poetry run pip install ../rust_lib/target/wheels/rust_lib-0.1.0-cp311-cp311-win_amd64.whl
     
     - name: Build EXE
       run: |
