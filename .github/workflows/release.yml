@@ -27,7 +27,7 @@ jobs:
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@v2
       with:
-        working-directory: rust_lib
+        workspaces: rust_lib
 
     - name: Install Poetry
       run: |
