@@ -1,3 +1,5 @@
+__version__ = "1.0.0"  # 先頭に追加
+
 import os
 import sys
 from PyQt6.QtWidgets import (
