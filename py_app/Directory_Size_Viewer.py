@@ -4,12 +4,14 @@
 このアプリケーションは、選択したディレクトリのサイズを計算し、
 サブディレクトリごとのサイズをツリービュー形式で表示します。
 Rustライブラリを使用して高速な計算を実現しています。
+オンラインストレージ対策として、タイムアウト機能とネットワークドライブ検出・スキップ機能を備えています。
 """
 
 import os
 import sys
 import time
 import threading
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Callable, Any
 
@@ -27,6 +29,12 @@ from PyQt6.QtWidgets import (
     QTreeView,
     QMessageBox,
     QStatusBar,
+    QCheckBox,
+    QSpinBox,
+    QGroupBox,
+    QFormLayout,
+    QDialog,
+    QDialogButtonBox,
 )
 from PyQt6.QtCore import (
     Qt,
@@ -37,6 +45,7 @@ from PyQt6.QtCore import (
     pyqtSlot,
     QModelIndex,
     QSize,
+    QTimer,
 )
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 
@@ -57,17 +66,20 @@ class WorkerSignals(QObject):
     error = pyqtSignal(str)
     result = pyqtSignal(object)
     progress = pyqtSignal(str, int)
+    warning = pyqtSignal(str)
 
 
 class DirectorySizeWorker(QRunnable):
     """ディレクトリサイズ計算を行うワーカークラス"""
 
-    def __init__(self, directory: str):
+    def __init__(self, directory: str, options: dict):
         """ワーカーの初期化"""
         super().__init__()
         self.directory = directory
+        self.options = options
         self.signals = WorkerSignals()
         self.is_cancelled = False
+        self.last_progress_time = time.time()
 
         # キャンセルフラグの作成（Rust実装の場合）
         if RUST_AVAILABLE:
@@ -85,6 +97,30 @@ class DirectorySizeWorker(QRunnable):
     def run(self):
         """ディレクトリサイズの計算を実行"""
         try:
+            # ネットワークドライブのチェック
+            if self.is_network_drive(self.directory):
+                if self.options.get("skip_network", True):  # デフォルトでスキップする
+                    self.signals.warning.emit(
+                        f"警告: {self.directory} はネットワークドライブまたはオンラインストレージのため、スキップします。"
+                    )
+                    # ネットワークドライブ用の結果を作成
+                    result = {
+                        "total_size": 0,
+                        "dir_structure": {
+                            "path": self.directory,
+                            "size": 0,
+                            "children": [],
+                            "network_drive": True,
+                        },
+                        "elapsed_time": 0,
+                    }
+                    self.signals.result.emit(result)
+                    return
+                else:
+                    self.signals.warning.emit(
+                        "警告: ネットワークドライブまたはオンラインストレージが検出されました。処理に時間がかかる場合があります。"
+                    )
+
             start_time = time.time()
 
             if RUST_AVAILABLE:
@@ -92,6 +128,7 @@ class DirectorySizeWorker(QRunnable):
                 try:
                     # 進捗コールバック関数
                     def progress_callback(path, size):
+                        self.last_progress_time = time.time()
                         self.signals.progress.emit(path, size)
 
                     # Rustライブラリを使用してディレクトリサイズを計算
@@ -100,7 +137,7 @@ class DirectorySizeWorker(QRunnable):
                     )
 
                     # ディレクトリ構造とサイズを取得
-                    dir_structure = self.get_directory_structure(self.directory)
+                    dir_structure = self.get_directory_structure(self.directory, 0)
 
                 except Exception as e:
                     if "キャンセルされました" in str(e):
@@ -138,11 +175,66 @@ class DirectorySizeWorker(QRunnable):
 
             self.signals.finished.emit()
 
-    def get_directory_structure(self, directory):
-        """ディレクトリ構造を再帰的に取得"""
+    def is_network_drive(self, path):
+        """ネットワークドライブまたはオンラインストレージかどうかを判定"""
+        # Windowsのネットワークドライブパターン
+        if re.match(r"^\\\\", path):
+            return True
+
+        # マウントされたネットワークドライブ
+        if sys.platform == "win32":
+            # Windowsの場合
+            drive_letter = os.path.splitdrive(path)[0]
+            if drive_letter:
+                try:
+                    import win32file
+
+                    drive_type = win32file.GetDriveType(drive_letter)
+                    return drive_type == win32file.DRIVE_REMOTE
+                except ImportError:
+                    # win32fileがない場合は簡易チェック
+                    pass
+
+        # 一般的なオンラインストレージのパターン
+        online_storage_patterns = [
+            r"OneDrive",
+            r"Dropbox",
+            r"Google Drive",
+            r"Box",
+            r"iCloud Drive",
+        ]
+        for pattern in online_storage_patterns:
+            if re.search(pattern, path, re.IGNORECASE):
+                return True
+
+        return False
+
+    def get_directory_structure(self, directory, depth=0):
+        """ディレクトリ構造を再帰的に取得（深さ制限付き）"""
         result = {"path": directory, "size": 0, "children": []}
 
+        # ネットワークドライブのチェック
+        if self.options.get("skip_network", True) and self.is_network_drive(directory):
+            result["network_drive"] = True
+            result["size"] = 0
+            return result
+
+        # 深さ制限のチェック
+        max_depth = self.options.get("max_depth", 0)
+        if max_depth > 0 and depth >= max_depth:
+            # 深さ制限に達した場合は子ディレクトリを展開しない
+            if RUST_AVAILABLE:
+                result["size"] = rust_lib.get_dir_size_py(directory)
+            else:
+                result["size"], _ = self.get_directory_size_py(directory, False)
+            result["depth_limited"] = True
+            return result
+
         try:
+            # タイムアウトチェック用の時間
+            start_time = time.time()
+            timeout = self.options.get("timeout", 10)  # デフォルト10秒
+
             # ディレクトリ全体のサイズを取得
             if RUST_AVAILABLE:
                 result["size"] = rust_lib.get_dir_size_py(directory)
@@ -152,12 +244,35 @@ class DirectorySizeWorker(QRunnable):
             # サブディレクトリを取得
             with os.scandir(directory) as entries:
                 for entry in entries:
+                    # キャンセルチェック
                     if self.is_cancelled:
                         return result
 
+                    # タイムアウトチェック
+                    current_time = time.time()
+                    if current_time - self.last_progress_time > timeout:
+                        self.signals.warning.emit(
+                            f"警告: {directory} の処理がタイムアウトしました。スキップします。"
+                        )
+                        result["timeout"] = True
+                        break
+
                     if entry.is_dir():
+                        # ネットワークドライブのチェック
+                        if self.options.get(
+                            "skip_network", True
+                        ) and self.is_network_drive(entry.path):
+                            child = {
+                                "path": entry.path,
+                                "size": 0,
+                                "children": [],
+                                "network_drive": True,
+                            }
+                            result["children"].append(child)
+                            continue
+
                         # 再帰的にサブディレクトリの構造を取得
-                        child = self.get_directory_structure(entry.path)
+                        child = self.get_directory_structure(entry.path, depth + 1)
                         result["children"].append(child)
         except PermissionError:
             # アクセス拒否の場合
@@ -168,6 +283,7 @@ class DirectorySizeWorker(QRunnable):
             result["access_denied"] = True
         except Exception as e:
             print(f"ディレクトリ構造の取得エラー: {directory} - {e}")
+            result["error"] = str(e)
 
         return result
 
@@ -182,13 +298,26 @@ class DirectorySizeWorker(QRunnable):
         else:
             access_denied_value = 2**64 - 1  # u64::MAX
 
+        # タイムアウト設定
+        timeout = self.options.get("timeout", 10)  # デフォルト10秒
+
         # サブディレクトリのサイズを計算
         try:
             with os.scandir(directory) as entries:
                 for entry in entries:
+                    # キャンセルチェック
                     if self.is_cancelled:
                         # キャンセルされた場合
                         return 0, dir_structure
+
+                    # タイムアウトチェック
+                    current_time = time.time()
+                    if current_time - self.last_progress_time > timeout:
+                        self.signals.warning.emit(
+                            f"警告: {directory} の処理がタイムアウトしました。スキップします。"
+                        )
+                        dir_structure["timeout"] = True
+                        break
 
                     if entry.is_dir():
                         subdir_path = entry.path
@@ -213,6 +342,7 @@ class DirectorySizeWorker(QRunnable):
 
                             # 進捗状況の更新
                             if update_progress:
+                                self.last_progress_time = time.time()
                                 self.signals.progress.emit(entry.path, file_size)
                         except (PermissionError, OSError):
                             pass
@@ -279,11 +409,23 @@ class DirectorySizeViewer(QMainWindow):
         # 現在のワーカー
         self.current_worker = None
 
+        # タイムアウト監視用タイマー
+        self.timeout_timer = QTimer(self)
+        self.timeout_timer.timeout.connect(self.check_timeout)
+        self.last_progress_time = 0
+
         # アクセス拒否値の取得
         if RUST_AVAILABLE:
             self.access_denied_value = rust_lib.get_access_denied_value()
         else:
             self.access_denied_value = 2**64 - 1  # u64::MAX
+
+        # オプション設定
+        self.options = {
+            "timeout": 10,  # タイムアウト秒数
+            "max_depth": 0,  # 最大深さ（0は無制限）
+            "skip_network": True,  # ネットワークドライブをスキップするか
+        }
 
         # UIの設定
         self.setup_ui()
@@ -325,6 +467,11 @@ class DirectorySizeViewer(QMainWindow):
         self.cancel_button.setEnabled(False)
         top_layout.addWidget(self.cancel_button)
 
+        # オプションボタン
+        self.options_button = QPushButton("オプション")
+        self.options_button.clicked.connect(self.show_options)
+        top_layout.addWidget(self.options_button)
+
         # ツリービュー
         self.tree_view = QTreeView()
         self.tree_view.setAlternatingRowColors(True)
@@ -334,7 +481,7 @@ class DirectorySizeViewer(QMainWindow):
         self.tree_view.setMinimumHeight(400)
         main_layout.addWidget(self.tree_view)
 
-        # モデルの設定（パス列を削除）
+        # モデルの設定
         self.model = QStandardItemModel(0, 2)
         self.model.setHorizontalHeaderLabels(["名前", "サイズ"])
         self.tree_view.setModel(self.model)
@@ -353,6 +500,69 @@ class DirectorySizeViewer(QMainWindow):
         # カラム幅の設定
         self.tree_view.setColumnWidth(0, 500)  # 名前
         self.tree_view.setColumnWidth(1, 150)  # サイズ
+
+    def show_options(self):
+        """オプション設定ダイアログを表示"""
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("オプション設定")
+
+        # ダイアログのレイアウト
+        dialog_layout = QVBoxLayout(dialog)
+
+        # タイムアウト設定
+        timeout_group = QGroupBox("タイムアウト設定")
+        timeout_layout = QFormLayout()
+        timeout_group.setLayout(timeout_layout)
+
+        timeout_spinbox = QSpinBox()
+        timeout_spinbox.setRange(1, 60)
+        timeout_spinbox.setValue(self.options["timeout"])
+        timeout_spinbox.setSuffix(" 秒")
+        timeout_layout.addRow("タイムアウト時間:", timeout_spinbox)
+
+        # 深さ制限設定
+        depth_group = QGroupBox("深さ制限設定")
+        depth_layout = QFormLayout()
+        depth_group.setLayout(depth_layout)
+
+        depth_spinbox = QSpinBox()
+        depth_spinbox.setRange(0, 100)
+        depth_spinbox.setValue(self.options["max_depth"])
+        depth_spinbox.setSpecialValueText("無制限")
+        depth_layout.addRow("最大深さ:", depth_spinbox)
+
+        # ネットワークドライブ設定
+        network_group = QGroupBox("ネットワークドライブ設定")
+        network_layout = QFormLayout()
+        network_group.setLayout(network_layout)
+
+        network_checkbox = QCheckBox("ネットワークドライブを自動的にスキップする")
+        network_checkbox.setChecked(self.options["skip_network"])
+        network_layout.addRow(network_checkbox)
+
+        # レイアウトに追加
+        dialog_layout.addWidget(timeout_group)
+        dialog_layout.addWidget(depth_group)
+        dialog_layout.addWidget(network_group)
+
+        # ボタンの設定
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(button_box)
+
+        # ダイアログの表示
+        result = dialog.exec()
+
+        # OKボタンが押された場合、設定を更新
+        if result == QDialog.DialogCode.Accepted:
+            self.options["timeout"] = timeout_spinbox.value()
+            self.options["max_depth"] = depth_spinbox.value()
+            self.options["skip_network"] = network_checkbox.isChecked()
 
     def browse_directory(self):
         """ディレクトリ選択ダイアログを表示"""
@@ -374,6 +584,7 @@ class DirectorySizeViewer(QMainWindow):
         # UIの状態を更新
         self.analyze_button.setEnabled(False)
         self.browse_button.setEnabled(False)
+        self.options_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.progress_bar.setVisible(True)
 
@@ -381,20 +592,40 @@ class DirectorySizeViewer(QMainWindow):
         self.model.removeRows(0, self.model.rowCount())
 
         # ワーカーの作成と実行
-        self.current_worker = DirectorySizeWorker(directory)
+        self.current_worker = DirectorySizeWorker(directory, self.options)
         self.current_worker.signals.result.connect(self.update_tree)
         self.current_worker.signals.error.connect(self.show_error)
+        self.current_worker.signals.warning.connect(self.show_warning)
         self.current_worker.signals.finished.connect(self.on_worker_finished)
         self.current_worker.signals.progress.connect(self.update_progress)
 
+        # タイムアウト監視の開始
+        self.last_progress_time = time.time()
+        self.timeout_timer.start(1000)  # 1秒ごとにチェック
+
         self.thread_pool.start(self.current_worker)
         self.status_bar.showMessage("解析中...")
+
+    def check_timeout(self):
+        """タイムアウトのチェック"""
+        if not self.current_worker:
+            self.timeout_timer.stop()
+            return
+
+        current_time = time.time()
+        if current_time - self.last_progress_time > self.options["timeout"] * 2:
+            # タイムアウト時間の2倍経過した場合は強制キャンセル
+            self.show_warning(
+                f"警告: 処理が長時間応答していません。処理をキャンセルします。"
+            )
+            self.cancel_analysis()
 
     def cancel_analysis(self):
         """解析処理をキャンセル"""
         if self.current_worker:
             self.current_worker.cancel()
             self.status_bar.showMessage("キャンセル中...")
+            self.timeout_timer.stop()
 
     def update_tree(self, result):
         """ツリービューの更新"""
@@ -439,11 +670,20 @@ class DirectorySizeViewer(QMainWindow):
             dir_name = os.path.basename(dir_path)
             dir_size = child["size"]
 
-            # アクセス拒否の場合は視覚的に区別
+            # 特殊状態の表示
+            display_name = dir_name
             if child.get("access_denied", False):
-                dir_name = f"{dir_name} (アクセス拒否)"
+                display_name = f"{dir_name} (アクセス拒否)"
+            elif child.get("timeout", False):
+                display_name = f"{dir_name} (タイムアウト)"
+            elif child.get("depth_limited", False):
+                display_name = f"{dir_name} (深さ制限)"
+            elif child.get("network_drive", False):
+                display_name = f"{dir_name} (ネットワークドライブ - スキップ)"
+            elif child.get("error", False):
+                display_name = f"{dir_name} (エラー: {child['error']})"
 
-            name_item = QStandardItem(dir_name)
+            name_item = QStandardItem(display_name)
             size_item = SizeItem(dir_size)
 
             # 親アイテムに追加
@@ -455,6 +695,9 @@ class DirectorySizeViewer(QMainWindow):
 
     def update_progress(self, path, size):
         """進捗状況の更新"""
+        # 最終進捗時間の更新
+        self.last_progress_time = time.time()
+
         # パスの短縮表示
         short_path = os.path.basename(path)
         size_kb = size / 1024
@@ -466,11 +709,20 @@ class DirectorySizeViewer(QMainWindow):
         """エラーメッセージの表示"""
         QMessageBox.critical(self, "エラー", error_message)
 
+    def show_warning(self, warning_message):
+        """警告メッセージの表示"""
+        self.status_bar.showMessage(warning_message)
+        print(warning_message)  # コンソールにも出力
+
     def on_worker_finished(self):
         """ワーカー終了時の処理"""
+        # タイムアウト監視の停止
+        self.timeout_timer.stop()
+
         # UIの状態をリセット
         self.analyze_button.setEnabled(True)
         self.browse_button.setEnabled(True)
+        self.options_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.current_worker = None
