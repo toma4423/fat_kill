@@ -1,4 +1,4 @@
-name: Build and Release
+name: Build and Release (Python Only)
 
 on:
   push:
@@ -12,23 +12,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Debug directory structure
-        run: |
-          dir
-          dir rust_lib
-        shell: cmd
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
 
       - name: Install Poetry
         run: |
@@ -41,34 +28,6 @@ jobs:
           poetry config virtualenvs.in-project true
           poetry install
 
-      - name: Build Rust library
-        run: |
-          cd rust_lib
-          cargo build --release
-
-      - name: Install Maturin and build wheel
-        run: |
-          cd py_app
-          poetry run pip install maturin
-          cd ../rust_lib
-          dir
-          poetry -C ../py_app run maturin build --release
-        shell: cmd
-
-      - name: List wheel files
-        run: |
-          dir rust_lib\target\wheels
-        shell: cmd
-
-      - name: Install Rust library
-        run: |
-          cd py_app
-          for /f "tokens=*" %%a in ('dir /b ..\rust_lib\target\wheels\*.whl') do (
-            echo Installing %%a
-            poetry run pip install ..\rust_lib\target\wheels\%%a
-          )
-        shell: cmd
-
       - name: Install PyInstaller
         run: |
           cd py_app
@@ -78,11 +37,6 @@ jobs:
         run: |
           cd py_app
           poetry run pyinstaller --onefile --windowed --name=Directory_Size_Viewer Directory_Size_Viewer.py
-
-      - name: List dist directory
-        run: |
-          dir py_app\dist
-        shell: cmd
 
       - name: Get version
         id: get_version
@@ -94,7 +48,7 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          name: Directory Size Viewer v${{ env.VERSION }}
+          name: Directory Size Viewer v${{ env.VERSION }} (Python Only)
           draft: false
           prerelease: false
           files: |

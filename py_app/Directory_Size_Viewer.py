@@ -48,6 +48,7 @@ from PyQt6.QtCore import (
     QTimer,
 )
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
+from version_info import VERSION
 
 # Rustライブラリのインポート
 try:
@@ -522,7 +523,7 @@ class DirectorySizeViewer(QMainWindow):
     def __init__(self):
         """アプリケーションの初期化"""
         super().__init__()
-        self.setWindowTitle("ディレクトリサイズ表示")
+        self.setWindowTitle(f"ディレクトリサイズ表示 v{VERSION}")
         self.setGeometry(100, 100, 1000, 700)
 
         # オプションの初期化

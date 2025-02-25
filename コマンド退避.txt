@@ -38,3 +38,26 @@ ren test_file.py gui_integration_test.py
 # Pythonのパスを直接指定
 
 poetry env use C:\Users\ikai0700275\AppData\Local\Programs\Python\Python311\python.exe
+
+
+
+
+
+:: 既存のタグを削除
+git tag -d v1.0.1
+git push origin :refs/tags/v1.0.1
+
+:: すべての変更をステージング
+git add .
+
+:: コミット
+git commit -m "バージョンを1.0.1に更新し、ワークフローを修正"
+
+:: プッシュ
+git push origin main
+
+:: 新しいタグを作成
+git tag v1.0.1
+
+:: タグをプッシュ
+git push origin v1.0.1
