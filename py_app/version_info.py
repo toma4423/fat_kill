@@ -30,3 +30,9 @@ VSVersionInfo(
         VarFileInfo([VarStruct("Translation", [1033, 1200])]),
     ],
 )
+
+"""
+バージョン情報管理モジュール
+"""
+
+VERSION = "1.0.0"  # メジャー.マイナー.パッチ
