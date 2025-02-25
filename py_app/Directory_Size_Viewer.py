@@ -132,12 +132,17 @@ class DirectorySizeWorker(QRunnable):
                         self.signals.progress.emit(path, size)
 
                     # Rustライブラリを使用してディレクトリサイズを計算
-                    total_size = rust_lib.get_dir_size_with_cancel_py(
-                        self.directory, self.cancel_ptr, progress_callback
+                    total_size, has_access_denied = (
+                        rust_lib.get_dir_size_with_cancel_py(
+                            self.directory, self.cancel_ptr, progress_callback
+                        )
                     )
 
                     # ディレクトリ構造とサイズを取得
                     dir_structure = self.get_directory_structure(self.directory, 0)
+
+                    # アクセス拒否フラグを設定
+                    dir_structure["has_access_denied"] = has_access_denied
 
                 except Exception as e:
                     if "キャンセルされました" in str(e):
@@ -162,6 +167,7 @@ class DirectorySizeWorker(QRunnable):
                 "total_size": total_size,
                 "dir_structure": dir_structure,
                 "elapsed_time": elapsed_time,
+                "has_access_denied": dir_structure.get("has_access_denied", False),
             }
             self.signals.result.emit(result)
 
@@ -177,7 +183,7 @@ class DirectorySizeWorker(QRunnable):
 
     def is_network_drive(self, path):
         """ネットワークドライブまたはオンラインストレージかどうかを判定"""
-        # Windowsのネットワークドライブパターン
+        # Windowsのネットワークドライブパターン (UNCパス)
         if re.match(r"^\\\\", path):
             return True
 
@@ -195,23 +201,82 @@ class DirectorySizeWorker(QRunnable):
                     # win32fileがない場合は簡易チェック
                     pass
 
-        # 一般的なオンラインストレージのパターン
-        online_storage_patterns = [
-            r"OneDrive",
-            r"Dropbox",
-            r"Google Drive",
-            r"Box",
-            r"iCloud Drive",
+        # オンラインストレージの詳細なパターンチェック
+        # BoxDriveの検出強化
+        box_patterns = [
+            r"\\Box\\",
+            r"/Box/",
+            r"\\BoxSync\\",
+            r"/BoxSync/",
+            r"\\Box Sync\\",
+            r"/Box Sync/",
+            r"\\BoxDrive\\",
+            r"/BoxDrive/",
+            r"\\Box Drive\\",
+            r"/Box Drive/",
         ]
-        for pattern in online_storage_patterns:
+        for pattern in box_patterns:
             if re.search(pattern, path, re.IGNORECASE):
                 return True
+
+        # その他のクラウドストレージサービス
+        cloud_storage_patterns = [
+            # OneDrive
+            r"\\OneDrive\\",
+            r"/OneDrive/",
+            r"\\OneDrive - ",
+            r"/OneDrive - ",
+            # Dropbox
+            r"\\Dropbox\\",
+            r"/Dropbox/",
+            # Google Drive
+            r"\\Google Drive\\",
+            r"/Google Drive/",
+            r"\\GoogleDrive\\",
+            r"/GoogleDrive/",
+            r"\\Google ドライブ\\",
+            r"/Google ドライブ/",
+            # iCloud
+            r"\\iCloud Drive\\",
+            r"/iCloud Drive/",
+            r"\\iCloudDrive\\",
+            r"/iCloudDrive/",
+            # その他の一般的なクラウドストレージ
+            r"\\pCloud\\",
+            r"/pCloud/",
+            r"\\MEGA\\",
+            r"/MEGA/",
+            r"\\Nextcloud\\",
+            r"/Nextcloud/",
+            r"\\ownCloud\\",
+            r"/ownCloud/",
+        ]
+
+        for pattern in cloud_storage_patterns:
+            if re.search(pattern, path, re.IGNORECASE):
+                return True
+
+        # 特定のパスパターンを持つが、ローカルディレクトリである可能性のあるケースを除外
+        # 例: "C:\Users\username\Documents\Box" はBoxという名前のローカルフォルダかもしれない
+        # この場合、完全なパスパターンでマッチしない限り、クラウドストレージとは判定しない
+
+        # 単純な名前のみのチェックは行わない（誤検出防止）
+        # 以前の実装:
+        # online_storage_patterns = ["OneDrive", "Dropbox", "Google Drive", "Box", "iCloud Drive"]
+        # for pattern in online_storage_patterns:
+        #     if re.search(pattern, path, re.IGNORECASE):
+        #         return True
 
         return False
 
     def get_directory_structure(self, directory, depth=0):
         """ディレクトリ構造を再帰的に取得（深さ制限付き）"""
-        result = {"path": directory, "size": 0, "children": []}
+        result = {
+            "path": directory,
+            "size": 0,
+            "children": [],
+            "has_access_denied": False,
+        }
 
         # ネットワークドライブのチェック
         if self.options.get("skip_network", True) and self.is_network_drive(directory):
@@ -222,25 +287,24 @@ class DirectorySizeWorker(QRunnable):
         # 深さ制限のチェック
         max_depth = self.options.get("max_depth", 0)
         if max_depth > 0 and depth >= max_depth:
-            # 深さ制限に達した場合は子ディレクトリを展開しない
-            if RUST_AVAILABLE:
-                result["size"] = rust_lib.get_dir_size_py(directory)
-            else:
-                result["size"], _ = self.get_directory_size_py(directory, False)
             result["depth_limited"] = True
             return result
 
+        # タイムアウトのチェック
+        timeout = self.options.get("timeout", 10)
+        current_time = time.time()
+        if (
+            self.options.get("timeout_enabled", True)
+            and current_time - self.last_progress_time > timeout
+        ):
+            self.signals.warning.emit(
+                f"警告: {directory} の処理がタイムアウトしました。スキップします。"
+            )
+            result["timeout"] = True
+            return result
+
+        # ディレクトリサイズの計算
         try:
-            # タイムアウトチェック用の時間
-            start_time = time.time()
-            timeout = self.options.get("timeout", 10)  # デフォルト10秒
-
-            # ディレクトリ全体のサイズを取得
-            if RUST_AVAILABLE:
-                result["size"] = rust_lib.get_dir_size_py(directory)
-            else:
-                result["size"], _ = self.get_directory_size_py(directory, False)
-
             # サブディレクトリを取得
             with os.scandir(directory) as entries:
                 for entry in entries:
@@ -250,7 +314,10 @@ class DirectorySizeWorker(QRunnable):
 
                     # タイムアウトチェック
                     current_time = time.time()
-                    if current_time - self.last_progress_time > timeout:
+                    if (
+                        self.options.get("timeout_enabled", True)
+                        and current_time - self.last_progress_time > timeout
+                    ):
                         self.signals.warning.emit(
                             f"警告: {directory} の処理がタイムアウトしました。スキップします。"
                         )
@@ -274,52 +341,78 @@ class DirectorySizeWorker(QRunnable):
                         # 再帰的にサブディレクトリの構造を取得
                         child = self.get_directory_structure(entry.path, depth + 1)
                         result["children"].append(child)
+                        result["size"] += child["size"]
+
+                        # アクセス拒否フラグの伝播
+                        if child.get("has_access_denied", False) or child.get(
+                            "access_denied", False
+                        ):
+                            result["has_access_denied"] = True
+                    else:
+                        # ファイルサイズを取得
+                        try:
+                            file_size = entry.stat().st_size
+                            result["size"] += file_size
+                        except (PermissionError, OSError):
+                            # ファイルアクセスエラーは無視
+                            pass
+
+                    # 進捗コールバック
+                    self.signals.progress.emit(directory, result["size"])
+                    self.last_progress_time = time.time()
+
         except PermissionError:
             # アクセス拒否の場合
-            if RUST_AVAILABLE:
-                result["size"] = rust_lib.get_access_denied_value()
+            if self.options.get("skip_access_denied", True):
+                result["access_denied"] = True
+                result["size"] = 0  # アクセス拒否の場合はサイズを0とする
             else:
-                result["size"] = 2**64 - 1  # u64::MAX
-            result["access_denied"] = True
+                # アクセス拒否をスキップしない場合は、親ディレクトリにフラグを設定
+                result["access_denied"] = True
+                result["has_access_denied"] = True
+                # サイズは0のままで、親ディレクトリの合計には影響しない
+
         except Exception as e:
-            print(f"ディレクトリ構造の取得エラー: {directory} - {e}")
+            # その他のエラー
             result["error"] = str(e)
+            result["size"] = 0
 
         return result
 
-    def get_directory_size_py(self, directory, update_progress=True):
-        """ディレクトリサイズの計算（Python実装）"""
+    def get_directory_size_py(self, directory, report_progress=True):
+        """Pythonによるディレクトリサイズ計算（再帰的）"""
         total_size = 0
-        dir_structure = {"path": directory, "size": 0, "children": []}
+        dir_structure = {
+            "path": directory,
+            "size": 0,
+            "children": [],
+            "has_access_denied": False,
+        }
 
-        # アクセス拒否値の取得
-        if RUST_AVAILABLE:
-            access_denied_value = rust_lib.get_access_denied_value()
-        else:
-            access_denied_value = 2**64 - 1  # u64::MAX
+        # ネットワークドライブのチェック
+        if self.options.get("skip_network", True) and self.is_network_drive(directory):
+            dir_structure["network_drive"] = True
+            return 0, dir_structure
 
-        # タイムアウト設定
-        timeout = self.options.get("timeout", 10)  # デフォルト10秒
-
-        # サブディレクトリのサイズを計算
         try:
             with os.scandir(directory) as entries:
                 for entry in entries:
                     # キャンセルチェック
                     if self.is_cancelled:
-                        # キャンセルされた場合
-                        return 0, dir_structure
+                        raise Exception("キャンセルされました")
 
                     # タイムアウトチェック
                     current_time = time.time()
-                    if current_time - self.last_progress_time > timeout:
-                        self.signals.warning.emit(
-                            f"警告: {directory} の処理がタイムアウトしました。スキップします。"
-                        )
+                    if self.options.get(
+                        "timeout_enabled", True
+                    ) and current_time - self.last_progress_time > self.options.get(
+                        "timeout", 10
+                    ):
                         dir_structure["timeout"] = True
-                        break
+                        return total_size, dir_structure
 
                     if entry.is_dir():
+                        # サブディレクトリの場合
                         subdir_path = entry.path
                         try:
                             subdir_size, subdir_structure = self.get_directory_size_py(
@@ -327,29 +420,62 @@ class DirectorySizeWorker(QRunnable):
                             )
                             dir_structure["children"].append(subdir_structure)
                             total_size += subdir_size
+
+                            # アクセス拒否フラグの伝播
+                            if subdir_structure.get(
+                                "has_access_denied", False
+                            ) or subdir_structure.get("access_denied", False):
+                                dir_structure["has_access_denied"] = True
                         except PermissionError:
-                            child = {
-                                "path": subdir_path,
-                                "size": access_denied_value,
-                                "children": [],
-                                "access_denied": True,
-                            }
-                            dir_structure["children"].append(child)
-                    elif entry.is_file():
+                            # アクセス拒否の場合
+                            if self.options.get("skip_access_denied", True):
+                                # アクセス拒否をスキップする場合
+                                child = {
+                                    "path": subdir_path,
+                                    "size": 0,
+                                    "children": [],
+                                    "access_denied": True,
+                                }
+                                dir_structure["children"].append(child)
+                                dir_structure["has_access_denied"] = True
+                            else:
+                                # アクセス拒否をスキップしない場合
+                                # 親ディレクトリにフラグを設定するが、サイズには影響しない
+                                child = {
+                                    "path": subdir_path,
+                                    "size": 0,
+                                    "children": [],
+                                    "access_denied": True,
+                                }
+                                dir_structure["children"].append(child)
+                                dir_structure["has_access_denied"] = True
+                    else:
+                        # ファイルの場合
                         try:
                             file_size = entry.stat().st_size
                             total_size += file_size
-
-                            # 進捗状況の更新
-                            if update_progress:
-                                self.last_progress_time = time.time()
-                                self.signals.progress.emit(entry.path, file_size)
                         except (PermissionError, OSError):
+                            # ファイルアクセスエラーは無視
                             pass
+
+                    # 進捗報告
+                    if report_progress:
+                        self.signals.progress.emit(directory, total_size)
+                        self.last_progress_time = time.time()
+
         except PermissionError:
-            dir_structure["size"] = access_denied_value
-            dir_structure["access_denied"] = True
-            return access_denied_value, dir_structure
+            # アクセス拒否の場合
+            if self.options.get("skip_access_denied", True):
+                # アクセス拒否をスキップする場合
+                dir_structure["access_denied"] = True
+                dir_structure["has_access_denied"] = True
+                return 0, dir_structure
+            else:
+                # アクセス拒否をスキップしない場合
+                # 親ディレクトリにフラグを設定するが、サイズには影響しない
+                dir_structure["access_denied"] = True
+                dir_structure["has_access_denied"] = True
+                return 0, dir_structure
 
         dir_structure["size"] = total_size
         return total_size, dir_structure
@@ -396,11 +522,19 @@ class DirectorySizeViewer(QMainWindow):
     def __init__(self):
         """アプリケーションの初期化"""
         super().__init__()
-
-        # ウィンドウの設定
         self.setWindowTitle("ディレクトリサイズ表示")
         self.setGeometry(100, 100, 1000, 700)
-        self.setMinimumSize(800, 600)
+
+        # オプションの初期化
+        self.options = {
+            "timeout_enabled": True,  # タイムアウト機能の有効/無効
+            "timeout": 10,  # タイムアウト時間（秒）
+            "max_depth": 0,  # 最大深さ（0は無制限）
+            "skip_network": True,  # ネットワークドライブをスキップするかどうか
+            "skip_box": True,  # Box Driveをスキップするかどうか
+            "skip_cloud": True,  # その他のクラウドストレージをスキップするかどうか
+            "skip_access_denied": True,  # アクセス拒否ディレクトリをスキップするかどうか
+        }
 
         # スレッドプールの設定
         self.thread_pool = QThreadPool()
@@ -419,13 +553,6 @@ class DirectorySizeViewer(QMainWindow):
             self.access_denied_value = rust_lib.get_access_denied_value()
         else:
             self.access_denied_value = 2**64 - 1  # u64::MAX
-
-        # オプション設定
-        self.options = {
-            "timeout": 10,  # タイムアウト秒数
-            "max_depth": 0,  # 最大深さ（0は無制限）
-            "skip_network": True,  # ネットワークドライブをスキップするか
-        }
 
         # UIの設定
         self.setup_ui()
@@ -507,20 +634,36 @@ class DirectorySizeViewer(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("オプション設定")
+        dialog.setMinimumWidth(450)
 
         # ダイアログのレイアウト
         dialog_layout = QVBoxLayout(dialog)
 
         # タイムアウト設定
         timeout_group = QGroupBox("タイムアウト設定")
-        timeout_layout = QFormLayout()
+        timeout_layout = QVBoxLayout()
         timeout_group.setLayout(timeout_layout)
 
+        # タイムアウト有効/無効
+        timeout_enabled_checkbox = QCheckBox("タイムアウト機能を有効にする")
+        timeout_enabled_checkbox.setChecked(self.options.get("timeout_enabled", True))
+        timeout_layout.addWidget(timeout_enabled_checkbox)
+
+        # タイムアウト時間設定
+        timeout_time_layout = QHBoxLayout()
+        timeout_label = QLabel("タイムアウト時間:")
         timeout_spinbox = QSpinBox()
         timeout_spinbox.setRange(1, 60)
         timeout_spinbox.setValue(self.options["timeout"])
         timeout_spinbox.setSuffix(" 秒")
-        timeout_layout.addRow("タイムアウト時間:", timeout_spinbox)
+        timeout_spinbox.setEnabled(self.options.get("timeout_enabled", True))
+        timeout_time_layout.addWidget(timeout_label)
+        timeout_time_layout.addWidget(timeout_spinbox)
+        timeout_time_layout.addStretch(1)
+        timeout_layout.addLayout(timeout_time_layout)
+
+        # タイムアウト有効/無効の連動
+        timeout_enabled_checkbox.toggled.connect(timeout_spinbox.setEnabled)
 
         # 深さ制限設定
         depth_group = QGroupBox("深さ制限設定")
@@ -533,19 +676,35 @@ class DirectorySizeViewer(QMainWindow):
         depth_spinbox.setSpecialValueText("無制限")
         depth_layout.addRow("最大深さ:", depth_spinbox)
 
-        # ネットワークドライブ設定
-        network_group = QGroupBox("ネットワークドライブ設定")
-        network_layout = QFormLayout()
-        network_group.setLayout(network_layout)
+        # スキップ設定
+        skip_group = QGroupBox("スキップ設定")
+        skip_layout = QVBoxLayout()
+        skip_group.setLayout(skip_layout)
 
+        # アクセス拒否ディレクトリのスキップ
+        access_denied_checkbox = QCheckBox("アクセス拒否ディレクトリをスキップする")
+        access_denied_checkbox.setChecked(self.options.get("skip_access_denied", True))
+        skip_layout.addWidget(access_denied_checkbox)
+
+        # ネットワークドライブのスキップ
         network_checkbox = QCheckBox("ネットワークドライブを自動的にスキップする")
-        network_checkbox.setChecked(self.options["skip_network"])
-        network_layout.addRow(network_checkbox)
+        network_checkbox.setChecked(self.options.get("skip_network", True))
+        skip_layout.addWidget(network_checkbox)
+
+        # Box Driveのスキップ
+        box_checkbox = QCheckBox("Box Driveを自動的にスキップする")
+        box_checkbox.setChecked(self.options.get("skip_box", True))
+        skip_layout.addWidget(box_checkbox)
+
+        # その他のクラウドストレージのスキップ
+        cloud_checkbox = QCheckBox("その他のクラウドストレージを自動的にスキップする")
+        cloud_checkbox.setChecked(self.options.get("skip_cloud", True))
+        skip_layout.addWidget(cloud_checkbox)
 
         # レイアウトに追加
         dialog_layout.addWidget(timeout_group)
         dialog_layout.addWidget(depth_group)
-        dialog_layout.addWidget(network_group)
+        dialog_layout.addWidget(skip_group)
 
         # ボタンの設定
         button_box = QDialogButtonBox(
@@ -560,9 +719,13 @@ class DirectorySizeViewer(QMainWindow):
 
         # OKボタンが押された場合、設定を更新
         if result == QDialog.DialogCode.Accepted:
+            self.options["timeout_enabled"] = timeout_enabled_checkbox.isChecked()
             self.options["timeout"] = timeout_spinbox.value()
             self.options["max_depth"] = depth_spinbox.value()
+            self.options["skip_access_denied"] = access_denied_checkbox.isChecked()
             self.options["skip_network"] = network_checkbox.isChecked()
+            self.options["skip_box"] = box_checkbox.isChecked()
+            self.options["skip_cloud"] = cloud_checkbox.isChecked()
 
     def browse_directory(self):
         """ディレクトリ選択ダイアログを表示"""
@@ -612,6 +775,10 @@ class DirectorySizeViewer(QMainWindow):
             self.timeout_timer.stop()
             return
 
+        # タイムアウト機能が無効の場合はチェックしない
+        if not self.options.get("timeout_enabled", True):
+            return
+
         current_time = time.time()
         if current_time - self.last_progress_time > self.options["timeout"] * 2:
             # タイムアウト時間の2倍経過した場合は強制キャンセル
@@ -628,34 +795,43 @@ class DirectorySizeViewer(QMainWindow):
             self.timeout_timer.stop()
 
     def update_tree(self, result):
-        """ツリービューの更新"""
+        """ディレクトリツリーの更新"""
+        # 結果の取得
         total_size = result["total_size"]
         dir_structure = result["dir_structure"]
         elapsed_time = result["elapsed_time"]
+        has_access_denied = result.get("has_access_denied", False)
 
         # ルートアイテムの作成
-        directory = self.dir_entry.text()
-        root_name = os.path.basename(directory) or directory
+        root_path = dir_structure["path"]
+        root_name = os.path.basename(root_path) or root_path
 
-        name_item = QStandardItem(root_name)
+        # アクセス拒否がある場合は表示に追加
+        display_name = root_name
+        if has_access_denied:
+            display_name = f"{root_name} (一部アクセス拒否あり)"
+
+        root_item = QStandardItem(display_name)
         size_item = SizeItem(total_size)
 
-        root_items = [name_item, size_item]
-        self.model.appendRow(root_items)
+        # モデルにルートアイテムを追加
+        self.model.appendRow([root_item, size_item])
 
-        # 再帰的にツリーを構築
-        self.add_directory_to_tree(dir_structure, name_item)
+        # 子ディレクトリを再帰的に追加
+        self.add_directory_to_tree(dir_structure, root_item)
 
         # ツリーを展開
-        root_index = self.model.index(0, 0)
-        self.tree_view.expand(root_index)
+        self.tree_view.expand(self.model.indexFromItem(root_item))
 
         # カラムのリサイズ
         self.tree_view.resizeColumnToContents(0)
 
         # ステータスバーの更新
-        if total_size == self.access_denied_value:
-            status = f"完了（一部アクセス不可） - {elapsed_time:.2f}秒"
+        if has_access_denied:
+            size_mb = total_size / (1024 * 1024)
+            status = (
+                f"完了 - {size_mb:.2f} MB (一部アクセス拒否あり) - {elapsed_time:.2f}秒"
+            )
         else:
             size_mb = total_size / (1024 * 1024)
             status = f"完了 - {size_mb:.2f} MB - {elapsed_time:.2f}秒"
@@ -680,6 +856,10 @@ class DirectorySizeViewer(QMainWindow):
                 display_name = f"{dir_name} (深さ制限)"
             elif child.get("network_drive", False):
                 display_name = f"{dir_name} (ネットワークドライブ - スキップ)"
+            elif child.get("box_drive", False):
+                display_name = f"{dir_name} (Box Drive - スキップ)"
+            elif child.get("cloud_storage", False):
+                display_name = f"{dir_name} (クラウドストレージ - スキップ)"
             elif child.get("error", False):
                 display_name = f"{dir_name} (エラー: {child['error']})"
 
@@ -726,6 +906,92 @@ class DirectorySizeViewer(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.current_worker = None
+
+    def is_network_or_cloud_storage(self, path):
+        """ネットワークドライブまたはクラウドストレージかどうかを判定"""
+        # 基本的なネットワークドライブチェック
+        if self.options.get("skip_network", True):
+            # UNCパスまたはマウントされたネットワークドライブ
+            if self.is_network_drive_basic(path):
+                return True, "network"
+
+        # Box Driveのチェック
+        if self.options.get("skip_box", True):
+            if self.is_box_drive(path):
+                return True, "box"
+
+        # その他のクラウドストレージのチェック
+        if self.options.get("skip_cloud", True):
+            if self.is_cloud_storage(path):
+                return True, "cloud"
+
+        return False, ""
+
+    def is_network_drive_basic(self, path):
+        """基本的なネットワークドライブチェック"""
+        # UNCパス
+        if re.match(r"^\\\\", path):
+            return True
+
+        # マウントされたネットワークドライブ
+        if sys.platform == "win32":
+            drive_letter = os.path.splitdrive(path)[0]
+            if drive_letter:
+                try:
+                    import win32file
+
+                    drive_type = win32file.GetDriveType(drive_letter)
+                    return drive_type == win32file.DRIVE_REMOTE
+                except ImportError:
+                    pass
+
+        return False
+
+    def is_box_drive(self, path):
+        """Box Driveかどうかを判定"""
+        box_patterns = [
+            r"\\Box\\",
+            r"/Box/",
+            r"\\BoxSync\\",
+            r"/BoxSync/",
+            r"\\Box Sync\\",
+            r"/Box Sync/",
+            r"\\BoxDrive\\",
+            r"/BoxDrive/",
+            r"\\Box Drive\\",
+            r"/Box Drive/",
+        ]
+        for pattern in box_patterns:
+            if re.search(pattern, path, re.IGNORECASE):
+                return True
+        return False
+
+    def is_cloud_storage(self, path):
+        """その他のクラウドストレージかどうかを判定"""
+        cloud_patterns = [
+            # OneDrive
+            r"\\OneDrive\\",
+            r"/OneDrive/",
+            r"\\OneDrive - ",
+            r"/OneDrive - ",
+            # Dropbox
+            r"\\Dropbox\\",
+            r"/Dropbox/",
+            # Google Drive
+            r"\\Google Drive\\",
+            r"/Google Drive/",
+            r"\\GoogleDrive\\",
+            r"/GoogleDrive/",
+            # iCloud
+            r"\\iCloud Drive\\",
+            r"/iCloud Drive/",
+            r"\\iCloudDrive\\",
+            r"/iCloudDrive/",
+        ]
+        for pattern in cloud_patterns:
+            if re.search(pattern, path, re.IGNORECASE):
+                return True
+        return False
 
 
 def main():

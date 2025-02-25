@@ -20,7 +20,11 @@ poetry run python -c "import PyQt6; print('PyQt6 installed successfully')"
 cd ../rust_lib
 poetry -C ../py_app run maturin build --release --manifest-path "%CD%\Cargo.toml"
 cd ../py_app
-poetry run pip install ../rust_lib/target/wheels/*.whl
+# 具体的なホイールファイル名を指定してインストール
+poetry run pip install ..\rust_lib\target\wheels\rust_lib-0.1.0-cp311-cp311-win_amd64.whl
+
+# アプリケーションを実行
+poetry run python Directory_Size_Viewer.py
 
 # 5. Rustライブラリのインストール確認
 poetry run pip install ../rust_lib/target/wheels/rust_lib-0.1.0-cp313-cp313-win_amd64.whl
