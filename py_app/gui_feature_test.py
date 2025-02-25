@@ -1,236 +1,156 @@
+"""
+Rustライブラリ機能テストスクリプト
+
+このスクリプトは、rust_libの機能をテストするためのものです。
+基本的なディレクトリサイズ計算、進捗報告、キャンセル機能をテストします。
+"""
+
+import rust_lib
 import os
+import time
 import sys
-from PyQt6.QtWidgets import (
-    QApplication,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QFileDialog,
-    QTreeView,
-    QHeaderView,
-    QMessageBox,
-    QProgressBar,
-)
-from PyQt6.QtGui import QStandardItemModel, QStandardItem
-from PyQt6.QtCore import (
-    QSize,
-    QDir,
-    Qt,
-    QThread,
-    pyqtSignal,
-    QObject,
-    pyqtSlot,
-)
-import errno
-
-import rust_lib  # Rust ライブラリをインポート
-
-print("Rust lib imported successfully")
+from pathlib import Path
 
 
-class SizeItem(QStandardItem):
-    def __init__(self, size_str, raw_size):
-        super().__init__(size_str)
-        self.raw_size = raw_size
+def test_basic_function():
+    """基本的なディレクトリサイズ計算のテスト"""
+    print("===== 基本機能のテスト =====")
+    path = os.path.expanduser("~")  # ホームディレクトリ
+    print(f"ディレクトリ: {path}")
 
-    def __lt__(self, other):
-        # サイズでソートする際に生の値を使用
-        return self.raw_size < other.raw_size
+    try:
+        start_time = time.time()
+        size = rust_lib.get_dir_size_py(path)
+        elapsed = time.time() - start_time
 
+        if size == rust_lib.get_access_denied_value():
+            print(f"結果: 一部のサブディレクトリにアクセスできませんでした")
+        else:
+            print(f"結果: {size} バイト ({size / (1024*1024):.2f} MB)")
 
-class Worker(QObject):
-    scan_complete = pyqtSignal(str, int, str)  # シグナル (名前, サイズ, パス)
-    scan_error = pyqtSignal(str, str)  # エラーシグナル (エラー種別, メッセージ)
-    finished = pyqtSignal()
-
-    def __init__(self, path):
-        super().__init__()
-        self.path = path
-        print(f"Worker initialized with path: {path}")
-
-    @pyqtSlot()
-    def run(self):
-        print("Worker.run() started")
-        try:
-            size = rust_lib.get_dir_size_py(self.path)
-            self.scan_complete.emit(os.path.basename(self.path), size, self.path)
-        except OSError as e:
-            if e.errno == errno.EACCES:
-                self.scan_error.emit("Permission Error", f"Access denied: {e.strerror}")
-            elif e.errno == errno.ENOENT:
-                self.scan_error.emit("Path Error", f"Path not found: {e.strerror}")
-            else:
-                self.scan_error.emit("Error", f"An error occurred: {e.strerror}")
-        finally:
-            self.finished.emit()
-        print("Worker.run() finished")
+        print(f"処理時間: {elapsed:.2f} 秒")
+    except Exception as e:
+        print(f"エラー: {e}")
 
 
-class DirectorySizeViewer(QWidget):
-    def __init__(self):
-        super().__init__()
-        print("DirectorySizeViewer.__init__ called")
-        self.setWindowTitle("Directory Size Viewer")
-        self.setGeometry(100, 100, 800, 600)
-        self.worker = None
-        self.worker_thread = None
-        self.last_directory = os.getcwd()  # 最後に選択したディレクトリ
-        self.init_ui()
+def progress_callback(path, size):
+    """進捗報告用コールバック関数"""
+    # パスを短縮して表示
+    short_path = Path(path).name
+    print(f"処理中: {short_path} - {size / 1024:.1f} KB")
 
-    def init_ui(self):
-        print("DirectorySizeViewer.init_ui() called")
-        # レイアウト
-        main_layout = QVBoxLayout()
-        self.setLayout(main_layout)
 
-        # パス入力欄と参照ボタン
-        path_layout = QHBoxLayout()
-        self.path_label = QLabel("Path:")
-        self.path_entry = QLineEdit()
-        self.path_entry.setText(self.last_directory)
-        self.path_entry.returnPressed.connect(self.scan_directory)  # Enterキーで実行
-        self.browse_button = QPushButton("Browse")
-        self.browse_button.clicked.connect(self.browse_directory)
-        path_layout.addWidget(self.path_label)
-        path_layout.addWidget(self.path_entry)
-        path_layout.addWidget(self.browse_button)
-        main_layout.addLayout(path_layout)
+def test_progress_reporting():
+    """進捗報告機能のテスト"""
+    print("\n===== 進捗報告機能のテスト =====")
 
-        # 実行ボタン
-        self.execute_button = QPushButton("Get Size")
-        self.execute_button.clicked.connect(self.scan_directory)
-        main_layout.addWidget(self.execute_button)
+    # テスト用のディレクトリ（小さめのディレクトリを選択）
+    if sys.platform == "win32":
+        path = os.path.join(os.environ["USERPROFILE"], "Documents")
+    else:
+        path = os.path.join(os.path.expanduser("~"), "Documents")
 
-        # プログレスバー
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # くるくる回る indeterminate モード
-        self.progress_bar.hide()  # 最初は隠しておく
-        main_layout.addWidget(self.progress_bar)
+    print(f"ディレクトリ: {path}")
 
-        # ツリービュー
-        self.tree_view = QTreeView()
-        self.tree_view.setHeaderHidden(False)  # ヘッダーを表示
-        self.tree_view.setSortingEnabled(True)
-        # self.tree_view.clicked.connect(self.on_tree_clicked)  # 一旦コメントアウト
+    # キャンセルフラグの作成
+    cancel_ptr = rust_lib.create_cancel_flag()
 
-        # ファイルシステムモデル (QFileSystemModel は使わない)
-        self.model = None  # 後で設定
-        # self.tree_view.setModel(self.model)
+    try:
+        start_time = time.time()
+        size = rust_lib.get_dir_size_with_cancel_py(path, cancel_ptr, progress_callback)
+        elapsed = time.time() - start_time
 
-        # ヘッダー設定
-        self.tree_view.header().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )  # 名前列を自動でリサイズ
-        self.tree_view.header().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Interactive
-        )  # サイズ列は手動でリサイズ可
-        self.tree_view.header().resizeSection(1, 150)  # サイズ列の初期幅
+        if size == rust_lib.get_access_denied_value():
+            print(f"結果: 一部のサブディレクトリにアクセスできませんでした")
+        else:
+            print(f"結果: {size} バイト ({size / (1024*1024):.2f} MB)")
 
-        main_layout.addWidget(self.tree_view)
+        print(f"処理時間: {elapsed:.2f} 秒")
+    except Exception as e:
+        print(f"エラー: {e}")
+    finally:
+        # キャンセルフラグの解放
+        rust_lib.release_cancel_flag(cancel_ptr)
 
-    def browse_directory(self):
-        directory = str(
-            QFileDialog.getExistingDirectory(
-                self,
-                "Select Directory",
-                self.last_directory,  # 前回のディレクトリを開く
-            )
-        )
-        if directory:
-            self.last_directory = directory
-            self.path_entry.setText(directory)
 
-    def scan_directory(self):
-        print("DirectorySizeViewer.scan_directory() called")
-        path = self.path_entry.text().strip()  # 空白を除去
+def test_cancellation():
+    """キャンセル機能のテスト"""
+    print("\n===== キャンセル機能のテスト =====")
 
-        # パスの検証
-        if not path:
-            QMessageBox.warning(self, "Warning", "Please enter a directory path")
-            return
+    # テスト用のディレクトリ（大きめのディレクトリを選択）
+    path = os.path.expanduser("~")  # ホームディレクトリ
+    print(f"ディレクトリ: {path}")
 
-        if not os.path.exists(path):
-            QMessageBox.critical(self, "Error", f"Path does not exist: {path}")
-            return
+    # キャンセルフラグの作成
+    cancel_ptr = rust_lib.create_cancel_flag()
 
-        if not os.path.isdir(path):
-            QMessageBox.critical(self, "Error", f"Not a directory: {path}")
-            return
+    # 別スレッドで少し待ってからキャンセル
+    import threading
 
-        self.progress_bar.show()
-        self.execute_button.setEnabled(False)
+    def cancel_after_delay():
+        time.sleep(0.5)  # 0.5秒後にキャンセル
+        print("\n処理をキャンセルします...")
+        rust_lib.set_cancel_flag(cancel_ptr, True)
 
-        # 既存のモデルがあれば削除
-        if self.model:
-            self.tree_view.setModel(None)
-            self.model = None
+    threading.Thread(target=cancel_after_delay).start()
 
-        # 新しいモデルを作成
-        self.model = QStandardItemModel()
-        self.model.setColumnCount(2)
-        self.model.setHorizontalHeaderLabels(["Name", "Size"])
-        self.tree_view.setModel(self.model)
+    try:
+        start_time = time.time()
+        size = rust_lib.get_dir_size_with_cancel_py(path, cancel_ptr, progress_callback)
+        elapsed = time.time() - start_time
 
-        # ワーカーオブジェクトとスレッドを作成
-        self.worker = Worker(path)
-        self.worker_thread = QThread()
+        print(f"結果: {size} バイト ({size / (1024*1024):.2f} MB)")
+        print(f"処理時間: {elapsed:.2f} 秒")
+    except Exception as e:
+        elapsed = time.time() - start_time
+        print(f"エラー: {e}")
+        print(f"キャンセルまでの時間: {elapsed:.2f} 秒")
+    finally:
+        # キャンセルフラグの解放
+        rust_lib.release_cancel_flag(cancel_ptr)
 
-        # ワーカーをスレッドに移動
-        self.worker.moveToThread(self.worker_thread)
 
-        # シグナルとスロットを接続
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.scan_complete.connect(self.add_item_to_tree)
-        self.worker.scan_error.connect(self.handle_error)
-        self.worker.finished.connect(self.scan_finished)
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker_thread.finished.connect(self.worker_thread.deleteLater)
+def test_error_handling():
+    """エラーハンドリングのテスト"""
+    print("\n===== エラーハンドリングのテスト =====")
 
-        # スレッドを開始
-        self.worker_thread.start()
+    # 存在しないディレクトリ
+    path = "/path/to/nonexistent/directory"
+    print(f"存在しないディレクトリ: {path}")
 
-    def add_item_to_tree(self, name, size, path):
-        item = QStandardItem(name)
-        size_item = SizeItem(self.format_size(size), size)  # 生のサイズも保持
-        item.setData(path, Qt.ItemDataRole.UserRole + 1)
-        self.model.appendRow([item, size_item])
+    try:
+        size = rust_lib.get_dir_size_py(path)
+        print(f"結果: {size} バイト")
+    except Exception as e:
+        print(f"エラー: {e}")
 
-    def format_size(self, size):
-        for unit in ["B", "KB", "MB", "GB", "TB"]:
-            if size < 1024.0:
-                return f"{size:.1f} {unit}"
-            size /= 1024.0
-        return f"{size:.1f} PB"
+    # アクセス権限のないディレクトリ
+    if sys.platform == "win32":
+        path = "C:\\Windows\\System32\\config"
+    else:
+        path = "/root"
 
-    def handle_error(self, error_type, error_message):
-        QMessageBox.critical(self, "Error", f"{error_type}: {error_message}")
-        self.progress_bar.hide()
-        self.execute_button.setEnabled(True)
+    print(f"\nアクセス権限のないディレクトリ: {path}")
 
-    def scan_finished(self):
-        print("DirectorySizeViewer.scan_finished() called")
-        self.progress_bar.hide()
-        self.execute_button.setEnabled(True)
+    try:
+        size = rust_lib.get_dir_size_py(path)
+        if size == rust_lib.get_access_denied_value():
+            print(f"結果: アクセス拒否 (u64::MAX)")
+        else:
+            print(f"結果: {size} バイト")
+    except Exception as e:
+        print(f"エラー: {e}")
 
 
 if __name__ == "__main__":
-    print("__main__ block started")
+    print("Rustライブラリ機能テスト\n")
+
     try:
-        app = QApplication(sys.argv)
-        print("QApplication object created")
-        viewer = DirectorySizeViewer()
-        print("DirectorySizeViewer object created")
-        viewer.show()
-        print("Window shown")
-        print(f"Window visible: {viewer.isVisible()}")
-        sys.exit(app.exec())
+        test_basic_function()
+        test_progress_reporting()
+        test_cancellation()
+        test_error_handling()
+
+        print("\nすべてのテストが完了しました。")
     except Exception as e:
-        print(f"An error occurred: {e}")
-        raise  # エラーの詳細を表示
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt: Program terminated by user")
-        sys.exit(1)
+        print(f"\n予期しないエラーが発生しました: {e}")

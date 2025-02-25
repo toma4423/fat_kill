@@ -1,454 +1,488 @@
-__version__ = "1.0.0"  # 先頭に追加
+"""
+ディレクトリサイズ表示アプリケーション
+
+このアプリケーションは、選択したディレクトリのサイズを計算し、
+サブディレクトリごとのサイズをツリービュー形式で表示します。
+Rustライブラリを使用して高速な計算を実現しています。
+"""
 
 import os
 import sys
+import time
+import threading
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Callable, Any
+
 from PyQt6.QtWidgets import (
     QApplication,
+    QMainWindow,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QLabel,
-    QLineEdit,
     QPushButton,
+    QLineEdit,
+    QLabel,
     QFileDialog,
-    QTreeView,
-    QHeaderView,
     QProgressBar,
+    QTreeView,
     QMessageBox,
+    QStatusBar,
 )
-from PyQt6.QtGui import QFileSystemModel, QStandardItemModel, QStandardItem
 from PyQt6.QtCore import (
-    QSize,
-    QDir,
     Qt,
-    QThread,
-    pyqtSignal,
     QObject,
-    pyqtSlot,
-    QTimer,
     QRunnable,
     QThreadPool,
-)  # QObject, pyqtSlot を追加
+    pyqtSignal,
+    pyqtSlot,
+    QModelIndex,
+    QSize,
+)
+from PyQt6.QtGui import QStandardItemModel, QStandardItem
 
-# from PyQt6.QtCore import QTimer
+# Rustライブラリのインポート
+try:
+    import rust_lib
 
-import rust_lib
-
-print("Rust lib imported successfully")
+    RUST_AVAILABLE = True
+except ImportError:
+    RUST_AVAILABLE = False
+    print("警告: Rustライブラリが見つかりません。Pythonの実装を使用します。")
 
 
 class WorkerSignals(QObject):
+    """ワーカースレッドからのシグナルを定義するクラス"""
+
     finished = pyqtSignal()
-    error = pyqtSignal(str, str)
-    result = pyqtSignal(str, int)
-    progress = pyqtSignal(int, int)
-    current_file = pyqtSignal(str)
+    error = pyqtSignal(str)
+    result = pyqtSignal(object)
+    progress = pyqtSignal(str, int)
 
 
-class DirSizeWorker(QRunnable):
-    def __init__(self, path, depth=1):
+class DirectorySizeWorker(QRunnable):
+    """ディレクトリサイズ計算を行うワーカークラス"""
+
+    def __init__(self, directory: str):
+        """ワーカーの初期化"""
         super().__init__()
-        self.path = path
+        self.directory = directory
         self.signals = WorkerSignals()
         self.is_cancelled = False
-        self.depth = depth  # 走査する深さ
 
-    def run(self):
-        try:
-            total_files = 0
-            print(f"Processing directory: {self.path} at depth {self.depth}")
-            try:
-                with os.scandir(self.path) as it:
-                    # まずルートディレクトリのサイズを計算
-                    try:
-                        root_size = rust_lib.get_dir_size_py(self.path)
-                        self.signals.result.emit(self.path, root_size)
-                    except OSError as e:
-                        print(f"Warning: Could not access {self.path}: {e}")
-                        self.signals.result.emit(self.path, 0)  # サイズを0として報告
-
-                    # 子ディレクトリのみを処理
-                    for entry in it:
-                        if self.is_cancelled:
-                            return
-                        if entry.is_dir():
-                            dir_path = entry.path
-                            try:
-                                dir_size = rust_lib.get_dir_size_py(dir_path)
-                                self.signals.result.emit(dir_path, dir_size)
-                            except OSError as e:
-                                print(f"Warning: Could not access {dir_path}: {e}")
-                                self.signals.result.emit(
-                                    dir_path, 0
-                                )  # サイズを0として報告
-                            total_files += 1
-            except PermissionError:
-                print(f"Permission denied: {self.path}")
-                return
-            except Exception as e:
-                print(f"Error scanning directory: {e}")
-                return
-
-            self.signals.progress.emit(total_files, total_files)
-        finally:
-            self.signals.finished.emit()
+        # キャンセルフラグの作成（Rust実装の場合）
+        if RUST_AVAILABLE:
+            self.cancel_ptr = rust_lib.create_cancel_flag()
+        else:
+            self.cancel_ptr = None
 
     def cancel(self):
+        """処理のキャンセル"""
         self.is_cancelled = True
+        if RUST_AVAILABLE and self.cancel_ptr is not None:
+            rust_lib.set_cancel_flag(self.cancel_ptr, True)
+
+    @pyqtSlot()
+    def run(self):
+        """ディレクトリサイズの計算を実行"""
+        try:
+            start_time = time.time()
+
+            if RUST_AVAILABLE:
+                # Rust実装を使用
+                try:
+                    # 進捗コールバック関数
+                    def progress_callback(path, size):
+                        self.signals.progress.emit(path, size)
+
+                    # Rustライブラリを使用してディレクトリサイズを計算
+                    total_size = rust_lib.get_dir_size_with_cancel_py(
+                        self.directory, self.cancel_ptr, progress_callback
+                    )
+
+                    # ディレクトリ構造とサイズを取得
+                    dir_structure = self.get_directory_structure(self.directory)
+
+                except Exception as e:
+                    if "キャンセルされました" in str(e):
+                        self.signals.error.emit("処理がキャンセルされました")
+                    else:
+                        self.signals.error.emit(f"エラー: {e}")
+                    return
+            else:
+                # Python実装を使用
+                try:
+                    total_size, dir_structure = self.get_directory_size_py(
+                        self.directory
+                    )
+                except Exception as e:
+                    self.signals.error.emit(f"エラー: {e}")
+                    return
+
+            elapsed_time = time.time() - start_time
+
+            # 結果を返す
+            result = {
+                "total_size": total_size,
+                "dir_structure": dir_structure,
+                "elapsed_time": elapsed_time,
+            }
+            self.signals.result.emit(result)
+
+        except Exception as e:
+            self.signals.error.emit(f"予期せぬエラー: {e}")
+        finally:
+            # キャンセルフラグの解放（Rust実装の場合）
+            if RUST_AVAILABLE and self.cancel_ptr is not None:
+                rust_lib.release_cancel_flag(self.cancel_ptr)
+                self.cancel_ptr = None
+
+            self.signals.finished.emit()
+
+    def get_directory_structure(self, directory):
+        """ディレクトリ構造を再帰的に取得"""
+        result = {"path": directory, "size": 0, "children": []}
+
+        try:
+            # ディレクトリ全体のサイズを取得
+            if RUST_AVAILABLE:
+                result["size"] = rust_lib.get_dir_size_py(directory)
+            else:
+                result["size"], _ = self.get_directory_size_py(directory, False)
+
+            # サブディレクトリを取得
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if self.is_cancelled:
+                        return result
+
+                    if entry.is_dir():
+                        # 再帰的にサブディレクトリの構造を取得
+                        child = self.get_directory_structure(entry.path)
+                        result["children"].append(child)
+        except PermissionError:
+            # アクセス拒否の場合
+            if RUST_AVAILABLE:
+                result["size"] = rust_lib.get_access_denied_value()
+            else:
+                result["size"] = 2**64 - 1  # u64::MAX
+            result["access_denied"] = True
+        except Exception as e:
+            print(f"ディレクトリ構造の取得エラー: {directory} - {e}")
+
+        return result
+
+    def get_directory_size_py(self, directory, update_progress=True):
+        """ディレクトリサイズの計算（Python実装）"""
+        total_size = 0
+        dir_structure = {"path": directory, "size": 0, "children": []}
+
+        # アクセス拒否値の取得
+        if RUST_AVAILABLE:
+            access_denied_value = rust_lib.get_access_denied_value()
+        else:
+            access_denied_value = 2**64 - 1  # u64::MAX
+
+        # サブディレクトリのサイズを計算
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if self.is_cancelled:
+                        # キャンセルされた場合
+                        return 0, dir_structure
+
+                    if entry.is_dir():
+                        subdir_path = entry.path
+                        try:
+                            subdir_size, subdir_structure = self.get_directory_size_py(
+                                subdir_path, False
+                            )
+                            dir_structure["children"].append(subdir_structure)
+                            total_size += subdir_size
+                        except PermissionError:
+                            child = {
+                                "path": subdir_path,
+                                "size": access_denied_value,
+                                "children": [],
+                                "access_denied": True,
+                            }
+                            dir_structure["children"].append(child)
+                    elif entry.is_file():
+                        try:
+                            file_size = entry.stat().st_size
+                            total_size += file_size
+
+                            # 進捗状況の更新
+                            if update_progress:
+                                self.signals.progress.emit(entry.path, file_size)
+                        except (PermissionError, OSError):
+                            pass
+        except PermissionError:
+            dir_structure["size"] = access_denied_value
+            dir_structure["access_denied"] = True
+            return access_denied_value, dir_structure
+
+        dir_structure["size"] = total_size
+        return total_size, dir_structure
 
 
-class DirectorySizeViewer(QWidget):
+class SizeItem(QStandardItem):
+    """サイズ表示用のカスタムアイテムクラス"""
+
+    def __init__(self, size_bytes):
+        """アイテムの初期化"""
+        self.size_bytes = size_bytes
+        size_str = self.format_size(size_bytes)
+        super().__init__(size_str)
+
+    def format_size(self, size_bytes):
+        """バイト数を読みやすい形式に変換"""
+        if size_bytes == 0:
+            return "0 B"
+
+        # アクセス拒否値の場合
+        if RUST_AVAILABLE and size_bytes == rust_lib.get_access_denied_value():
+            return "アクセス拒否"
+
+        units = ["B", "KB", "MB", "GB", "TB", "PB"]
+        i = 0
+        size = float(size_bytes)
+
+        while size >= 1024 and i < len(units) - 1:
+            size /= 1024
+            i += 1
+
+        return f"{size:.2f} {units[i]}"
+
+    def __lt__(self, other):
+        """ソート用の比較演算子"""
+        if isinstance(other, SizeItem):
+            return self.size_bytes < other.size_bytes
+        return super().__lt__(other)
+
+
+class DirectorySizeViewer(QMainWindow):
+    """ディレクトリサイズ表示アプリケーションのメインクラス"""
+
     def __init__(self):
+        """アプリケーションの初期化"""
         super().__init__()
-        self.threadpool = QThreadPool()
-        # スレッドプールの終了待機時間を設定
-        self.threadpool.setExpiryTimeout(5000)  # 5秒
-        print(f"Maximum thread count: {self.threadpool.maxThreadCount()}")
-        self.last_directory = os.getcwd()
-        self.init_ui()
 
-    def init_ui(self):
-        print("DirectorySizeViewer.init_ui() called")
-        # レイアウト
-        main_layout = QVBoxLayout()
-        self.setLayout(main_layout)
+        # ウィンドウの設定
+        self.setWindowTitle("ディレクトリサイズ表示")
+        self.setGeometry(100, 100, 1000, 700)
+        self.setMinimumSize(800, 600)
 
-        # ウィンドウサイズ設定
-        self.setGeometry(100, 100, 800, 600)
-        self.setWindowTitle("Directory Size Viewer")
+        # スレッドプールの設定
+        self.thread_pool = QThreadPool()
+        print(f"スレッド数: {self.thread_pool.maxThreadCount()}")
 
-        # パス入力欄と参照ボタン
-        path_layout = QHBoxLayout()
-        self.path_label = QLabel("Path:")
-        self.path_entry = QLineEdit()
-        self.path_entry.setText(self.last_directory)
-        self.browse_button = QPushButton("Browse")
+        # 現在のワーカー
+        self.current_worker = None
+
+        # アクセス拒否値の取得
+        if RUST_AVAILABLE:
+            self.access_denied_value = rust_lib.get_access_denied_value()
+        else:
+            self.access_denied_value = 2**64 - 1  # u64::MAX
+
+        # UIの設定
+        self.setup_ui()
+
+    def setup_ui(self):
+        """UIコンポーネントの設定"""
+        # メインウィジェット
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        # メインレイアウト
+        main_layout = QVBoxLayout(main_widget)
+
+        # 上部フレーム（ディレクトリ選択部分）
+        top_layout = QHBoxLayout()
+        main_layout.addLayout(top_layout)
+
+        # ディレクトリラベル
+        dir_label = QLabel("ディレクトリ:")
+        top_layout.addWidget(dir_label)
+
+        # ディレクトリ入力欄
+        self.dir_entry = QLineEdit()
+        top_layout.addWidget(self.dir_entry)
+
+        # 参照ボタン
+        self.browse_button = QPushButton("参照")
         self.browse_button.clicked.connect(self.browse_directory)
-        path_layout.addWidget(self.path_label)
-        path_layout.addWidget(self.path_entry)
-        path_layout.addWidget(self.browse_button)
-        main_layout.addLayout(path_layout)
+        top_layout.addWidget(self.browse_button)
 
-        # ボタン
-        button_layout = QHBoxLayout()
-        self.scan_button = QPushButton("Scan Directory")
-        self.scan_button.clicked.connect(self.scan_directory)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.cancel_scan)
+        # 解析ボタン
+        self.analyze_button = QPushButton("解析")
+        self.analyze_button.clicked.connect(self.analyze_directory)
+        top_layout.addWidget(self.analyze_button)
+
+        # キャンセルボタン
+        self.cancel_button = QPushButton("キャンセル")
+        self.cancel_button.clicked.connect(self.cancel_analysis)
         self.cancel_button.setEnabled(False)
-        button_layout.addWidget(self.scan_button)
-        button_layout.addWidget(self.cancel_button)
-        main_layout.addLayout(button_layout)
-
-        # 状態表示
-        self.status_label = QLabel("Ready")
-        self.result_label = QLabel("")
-        main_layout.addWidget(self.status_label)
-        main_layout.addWidget(self.result_label)
-
-        # プログレスバー
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.hide()
-        main_layout.addWidget(self.progress_bar)
+        top_layout.addWidget(self.cancel_button)
 
         # ツリービュー
         self.tree_view = QTreeView()
-        self.tree_view.setHeaderHidden(False)
+        self.tree_view.setAlternatingRowColors(True)
         self.tree_view.setSortingEnabled(True)
-        self.tree_view.expanded.connect(self.on_item_expanded)  # 展開時のイベント
-
-        # モデルの初期化
-        self.model = QStandardItemModel()
-        self.model.setColumnCount(2)
-        self.model.setHorizontalHeaderLabels(["Name", "Size"])
-        self.tree_view.setModel(self.model)
-
-        # ヘッダー設定
-        self.tree_view.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree_view.header().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Interactive
-        )
-        self.tree_view.header().resizeSection(1, 150)
-
+        self.tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self.tree_view.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
+        self.tree_view.setMinimumHeight(400)
         main_layout.addWidget(self.tree_view)
 
+        # モデルの設定（パス列を削除）
+        self.model = QStandardItemModel(0, 2)
+        self.model.setHorizontalHeaderLabels(["名前", "サイズ"])
+        self.tree_view.setModel(self.model)
+
+        # 進捗バー
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # 不確定モード
+        self.progress_bar.setVisible(False)
+        main_layout.addWidget(self.progress_bar)
+
+        # ステータスバー
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("準備完了")
+
+        # カラム幅の設定
+        self.tree_view.setColumnWidth(0, 500)  # 名前
+        self.tree_view.setColumnWidth(1, 150)  # サイズ
+
     def browse_directory(self):
-        directory = str(QFileDialog.getExistingDirectory(self, "Select Directory"))
+        """ディレクトリ選択ダイアログを表示"""
+        directory = QFileDialog.getExistingDirectory(self, "ディレクトリを選択")
         if directory:
-            self.path_entry.setText(directory)
+            self.dir_entry.setText(directory)
 
-    def scan_directory(self):
-        path = self.path_entry.text().strip()
-        if not path:
-            self.status_label.setText("Error: No path specified")
+    def analyze_directory(self):
+        """ディレクトリの解析を開始"""
+        directory = self.dir_entry.text()
+        if not directory:
+            QMessageBox.warning(self, "警告", "ディレクトリを選択してください")
             return
 
-        if not os.path.exists(path):
-            self.status_label.setText("Error: Path does not exist")
+        if not os.path.isdir(directory):
+            QMessageBox.warning(self, "警告", "有効なディレクトリを選択してください")
             return
 
-        if not os.path.isdir(path):
-            self.status_label.setText("Error: Not a directory")
-            return
-
-        self.scan_button.setEnabled(False)
+        # UIの状態を更新
+        self.analyze_button.setEnabled(False)
+        self.browse_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self.progress_bar.show()
-        self.status_label.setText("Scanning...")
-        self.result_label.setText("")
+        self.progress_bar.setVisible(True)
 
         # モデルをクリア
-        self.model.clear()
-        self.model.setHorizontalHeaderLabels(["Name", "Size"])
+        self.model.removeRows(0, self.model.rowCount())
 
-        # ルートディレクトリの直下のみを走査
-        worker = DirSizeWorker(path, depth=1)
-        worker.signals.result.connect(self.handle_result)
-        worker.signals.error.connect(self.handle_error)
-        worker.signals.finished.connect(self.scan_complete)
-        worker.signals.progress.connect(self.update_progress)
-        worker.signals.current_file.connect(self.update_current_file)
+        # ワーカーの作成と実行
+        self.current_worker = DirectorySizeWorker(directory)
+        self.current_worker.signals.result.connect(self.update_tree)
+        self.current_worker.signals.error.connect(self.show_error)
+        self.current_worker.signals.finished.connect(self.on_worker_finished)
+        self.current_worker.signals.progress.connect(self.update_progress)
 
-        self.current_worker = worker
-        self.threadpool.start(worker)
+        self.thread_pool.start(self.current_worker)
+        self.status_bar.showMessage("解析中...")
 
-    @pyqtSlot(str, int)
-    def handle_result(self, path, size):
-        print("DirectorySizeViewer.handle_result() called")
-        print(f"Processing path: {path} with size: {size}")
-
-        # モデルが未初期化の場合は初期化
-        if self.model is None:
-            self.model = QStandardItemModel()
-            self.model.setColumnCount(2)
-            self.model.setHorizontalHeaderLabels(["Name", "Size"])
-            self.tree_view.setModel(self.model)
-
-        # 既存のアイテムを探す（更新のため）
-        existing_item = None
-
-        def find_existing_item(start_item):
-            if not start_item:
-                return None
-            if start_item.data(Qt.ItemDataRole.UserRole + 1) == path:
-                return start_item
-            for row in range(start_item.rowCount()):
-                child = start_item.child(row, 0)
-                result = find_existing_item(child)
-                if result:
-                    return result
-            return None
-
-        # ルートから既存アイテムを探す
-        for row in range(self.model.rowCount()):
-            item = self.model.item(row, 0)
-            existing_item = find_existing_item(item)
-            if existing_item:
-                break
-
-        # パスの階層を分解
-        parent_path = os.path.dirname(path)
-        name = os.path.basename(path)
-        print(f"Parent path: {parent_path}, Name: {name}")
-
-        # 選択されたルートパス
-        root_path = self.path_entry.text().strip()
-        print(f"Root path: {root_path}")
-
-        # 親アイテムを探す
-        parent_item = None
-        if parent_path != os.path.dirname(root_path):
-            # 親パスを持つアイテムを再帰的に探す
-            def find_parent_item(start_item):
-                if not start_item:
-                    return None
-                # まず現在のアイテムをチェック
-                if start_item.data(Qt.ItemDataRole.UserRole + 1) == parent_path:
-                    return start_item
-                for row in range(start_item.rowCount()):
-                    child = start_item.child(row, 0)
-                    if child.data(Qt.ItemDataRole.UserRole + 1) == parent_path:
-                        return child
-                    if child.hasChildren():
-                        result = find_parent_item(child)
-                        if result:
-                            return result
-                return None
-
-            # ルートから親アイテムを探す
-            for row in range(self.model.rowCount()):
-                item = self.model.item(row, 0)
-                if item.data(Qt.ItemDataRole.UserRole + 1) == parent_path:
-                    parent_item = item
-                    break
-                if item.hasChildren():
-                    parent_item = find_parent_item(item)
-                    if parent_item:
-                        break
-
-        print(f"Found parent item: {parent_item.text() if parent_item else 'None'}")
-
-        # 既存アイテムがある場合は更新
-        if existing_item:
-            # ルートアイテムの場合は親がないので直接モデルから更新
-            if existing_item.parent() is None:
-                if size == rust_lib.get_access_denied_value():
-                    self.model.setItem(
-                        existing_item.row(), 1, QStandardItem("一部アクセス不可")
-                    )
-                else:
-                    self.model.setItem(
-                        existing_item.row(), 1, QStandardItem(self.format_size(size))
-                    )
-            else:
-                existing_item.parent().setChild(
-                    existing_item.row(), 1, QStandardItem(self.format_size(size))
-                )
-            return
-
-        item = QStandardItem(name)
-        if (
-            size == rust_lib.get_access_denied_value()
-        ):  # アクセス拒否があったディレクトリ
-            size_item = QStandardItem("一部アクセス不可")
-            item.setToolTip("一部のサブディレクトリにアクセスできません")
-        else:
-            size_item = QStandardItem(self.format_size(size))
-        # アクセス権限がない場合の表示
-        if size == 0 and not os.access(path, os.R_OK):
-            size_item = QStandardItem("アクセス不可")
-            item.setEnabled(False)  # グレーアウト表示
-            item.setToolTip("このディレクトリにアクセスできません")
-        item.setData(path, Qt.ItemDataRole.UserRole + 1)
-        item.setData(True, Qt.ItemDataRole.UserRole + 2)
-        # 子ディレクトリがあるかチェック
-        has_subdirs = False
-        # 直接の子ディレクトリのみをチェック
-        try:
-            with os.scandir(path) as it:
-                for entry in it:
-                    if entry.is_dir():
-                        has_subdirs = True
-                        break
-        except PermissionError:
-            print(f"Permission denied: {path}")
-        except Exception as e:
-            print(f"Error checking subdirs: {e}")
-
-        if has_subdirs:
-            # ダミーアイテムを追加して展開可能なことを示す
-            dummy = QStandardItem("")
-            item.appendRow([dummy, QStandardItem("")])
-        print(f"Adding directory: {path}")
-
-        if parent_item:
-            parent_item.appendRow([item, size_item])
-            print(f"Added to parent: {parent_item.text()}")
-        else:
-            self.model.appendRow([item, size_item])
-            print("Added to root")
-
-    @pyqtSlot(str, str)
-    def handle_error(self, error_type, message):
-        if "アクセスが拒否されました" in message:
-            self.status_label.setText(
-                "警告: 一部のフォルダにアクセスできません（管理者権限が必要）"
-            )
-        else:
-            self.status_label.setText(f"{error_type}: {message}")
-        self.scan_complete()
-
-    @pyqtSlot()
-    def scan_complete(self):
-        print("DirectorySizeViewer.scan_complete() called")
-        self.progress_bar.hide()
-        self.scan_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        if hasattr(self, "current_worker"):
-            delattr(self, "current_worker")
-
-    def format_size(self, size):
-        for unit in ["B", "KB", "MB", "GB", "TB"]:
-            if size < 1024.0:
-                return f"{size:.1f} {unit}"
-            size /= 1024.0
-        return f"{size:.1f} PB"
-
-    def update_progress(self, current, total):
-        self.progress_bar.setRange(0, total)
-        self.progress_bar.setValue(current)
-
-    def update_current_file(self, file):
-        self.status_label.setText(f"Scanning: {file}")
-
-    def cancel_scan(self):
-        """スキャンをキャンセルする"""
-        if hasattr(self, "current_worker"):
+    def cancel_analysis(self):
+        """解析処理をキャンセル"""
+        if self.current_worker:
             self.current_worker.cancel()
-            self.status_label.setText("Cancelling...")
-            self.cancel_button.setEnabled(False)
+            self.status_bar.showMessage("キャンセル中...")
 
-    def on_item_expanded(self, index):
-        """ツリーアイテムが展開されたときの処理"""
-        item = self.model.itemFromIndex(index)
-        if not item:
-            print("No item found for index")
-            return
+    def update_tree(self, result):
+        """ツリービューの更新"""
+        total_size = result["total_size"]
+        dir_structure = result["dir_structure"]
+        elapsed_time = result["elapsed_time"]
 
-        # アイテムが既に子を持っている場合はダミーアイテムかどうかをチェック
-        if item.hasChildren() and item.child(0, 0).text() != "":
-            print(f"Item {item.text()} already has children")
-            return
+        # ルートアイテムの作成
+        directory = self.dir_entry.text()
+        root_name = os.path.basename(directory) or directory
 
-        # ダミーアイテムを削除
-        if item.hasChildren():
-            item.removeRow(0)
+        name_item = QStandardItem(root_name)
+        size_item = SizeItem(total_size)
 
-        # パスを取得して子ディレクトリを走査
-        path = item.data(Qt.ItemDataRole.UserRole + 1)
-        print(f"Expanding directory: {path}")
-        if path and os.path.isdir(path):
-            self.progress_bar.show()
-            # 既存のワーカーをキャンセルして新しいワーカーを作成
-            self.cancel_scan()  # 既存のワーカーをキャンセル
-            worker = DirSizeWorker(path, depth=1)
-            worker.signals.result.connect(self.handle_result)
-            worker.signals.error.connect(self.handle_error)
-            worker.signals.finished.connect(self.scan_complete)
-            worker.signals.progress.connect(self.update_progress)
-            worker.signals.current_file.connect(self.update_current_file)
-            self.current_worker = worker
-            self.threadpool.start(worker)
+        root_items = [name_item, size_item]
+        self.model.appendRow(root_items)
+
+        # 再帰的にツリーを構築
+        self.add_directory_to_tree(dir_structure, name_item)
+
+        # ツリーを展開
+        root_index = self.model.index(0, 0)
+        self.tree_view.expand(root_index)
+
+        # カラムのリサイズ
+        self.tree_view.resizeColumnToContents(0)
+
+        # ステータスバーの更新
+        if total_size == self.access_denied_value:
+            status = f"完了（一部アクセス不可） - {elapsed_time:.2f}秒"
         else:
-            print(f"Path not valid or not a directory: {path}")
+            size_mb = total_size / (1024 * 1024)
+            status = f"完了 - {size_mb:.2f} MB - {elapsed_time:.2f}秒"
 
-    def closeEvent(self, event):
-        print("Waiting for threads to finish...")
-        self.threadpool.waitForDone()
-        print("All threads finished")
-        super().closeEvent(event)
+        self.status_bar.showMessage(status)
+
+    def add_directory_to_tree(self, dir_info, parent_item):
+        """ディレクトリ情報をツリーに再帰的に追加"""
+        # 子ディレクトリを追加
+        for child in dir_info.get("children", []):
+            dir_path = child["path"]
+            dir_name = os.path.basename(dir_path)
+            dir_size = child["size"]
+
+            # アクセス拒否の場合は視覚的に区別
+            if child.get("access_denied", False):
+                dir_name = f"{dir_name} (アクセス拒否)"
+
+            name_item = QStandardItem(dir_name)
+            size_item = SizeItem(dir_size)
+
+            # 親アイテムに追加
+            parent_item.appendRow([name_item, size_item])
+
+            # 子ディレクトリがある場合は再帰的に追加
+            if child.get("children") and len(child["children"]) > 0:
+                self.add_directory_to_tree(child, name_item)
+
+    def update_progress(self, path, size):
+        """進捗状況の更新"""
+        # パスの短縮表示
+        short_path = os.path.basename(path)
+        size_kb = size / 1024
+
+        # ステータスバーの更新
+        self.status_bar.showMessage(f"処理中: {short_path} - {size_kb:.1f} KB")
+
+    def show_error(self, error_message):
+        """エラーメッセージの表示"""
+        QMessageBox.critical(self, "エラー", error_message)
+
+    def on_worker_finished(self):
+        """ワーカー終了時の処理"""
+        # UIの状態をリセット
+        self.analyze_button.setEnabled(True)
+        self.browse_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.current_worker = None
+
+
+def main():
+    """アプリケーションのメイン関数"""
+    app = QApplication(sys.argv)
+    viewer = DirectorySizeViewer()
+    viewer.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    print("__main__ block started")
-    try:
-        app = QApplication(sys.argv)
-        print("QApplication object created")
-        viewer = DirectorySizeViewer()
-        print("DirectorySizeViewer object created")
-        viewer.show()
-        print("Window shown")
-        print(f"Window visible: {viewer.isVisible()}")
-        # アプリケーション終了時の処理を追加
-        app.aboutToQuit.connect(lambda: viewer.threadpool.waitForDone())
-        exit_code = app.exec()
-        print(f"Exiting with code: {exit_code}")
-        sys.exit(exit_code)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    except SystemExit as e:
-        print(f"SystemExit occurred: {e}")
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt: Program terminated by user")
-        sys.exit(1)
+    main()
