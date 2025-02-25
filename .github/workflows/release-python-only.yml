@@ -36,7 +36,7 @@ jobs:
       - name: Build executable
         run: |
           cd py_app
-          poetry run pyinstaller --onefile --windowed --name=Directory_Size_Viewer Directory_Size_Viewer.py
+          poetry run pyinstaller --onefile --windowed --name=Directory_Size_Viewer --version-file=file_version_info.py Directory_Size_Viewer.py
 
       - name: Get version
         id: get_version

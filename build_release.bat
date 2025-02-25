@@ -37,7 +37,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo 5. 実行ファイルのビルド
-poetry run pyinstaller --onefile --windowed --name=Directory_Size_Viewer Directory_Size_Viewer.py
+poetry run pyinstaller --onefile --windowed --name=Directory_Size_Viewer --version-file=file_version_info.py Directory_Size_Viewer.py
 if %ERRORLEVEL% neq 0 (
     echo 実行ファイルのビルドに失敗しました
     exit /b %ERRORLEVEL%

@@ -48,7 +48,7 @@ from PyQt6.QtCore import (
     QTimer,
 )
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
-from version_info import VERSION
+from version import VERSION  # version_info.py ではなく version.py からインポート
 
 # Rustライブラリのインポート
 try:
